@@ -1,0 +1,104 @@
+# Render Blueprint — auto-creates the backend web service + a managed
+# Redis-compatible (Key Value) datastore when this repo is connected as a
+# Blueprint at https://dashboard.render.com/blueprints.
+#
+# Postgres lives outside Render (the user's Neon database). The only secret
+# the user needs to fill in via the Render UI is DATABASE_URL — every
+# other env var is generated, defaulted, or wired through service refs.
+#
+# Spec: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: yt-transcripts-api
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: backend
+
+    # Render sets NODE_ENV=production by default for `runtime: node`, which
+    # makes `npm install` skip devDependencies. tsc + ts-node are dev-only,
+    # so we set it explicitly during install and flip back to prod at start.
+    buildCommand: NODE_ENV=development npm install --include=dev && npm run build
+    startCommand: npm run start:prod
+
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+
+      # Render injects PORT dynamically; our config picks it up via env.
+
+      # The frontend origin(s). Comma-separate multiple origins (production +
+      # preview deploys). Set after the Vercel deploy is up, via the Render
+      # dashboard. Until then CORS will block the dashboard pages.
+      - key: FRONTEND_URL
+        sync: false
+
+      # Postgres lives on Neon — paste the full connection string with
+      # ?sslmode=require here in the Render dashboard.
+      - key: DATABASE_URL
+        sync: false
+
+      # Auto-generated 32-char secret. Render keeps it stable across
+      # deploys; rotating invalidates every existing dashboard session.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_COOKIE_NAME
+        value: yt_session
+      - key: JWT_EXPIRES_IN
+        value: 7d
+
+      # Redis URL is wired from the keyvalue service below. Render exposes
+      # the connection string with TLS-enabled redis:// or rediss:// for
+      # both internal and external connections.
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: yt-transcripts-redis
+          property: connectionString
+
+      # Stub flags — flip to false once you have OpenAI / Stripe credentials.
+      - key: STUB_STRIPE
+        value: 'true'
+      - key: STUB_WHISPER
+        value: 'true'
+      - key: STUB_PROXY
+        value: 'true'
+      # Translation defaults to false (uses the free Google fallback when no
+      # OpenAI key is set; OpenAI when one is provided).
+      - key: STUB_TRANSLATION
+        value: 'false'
+
+      # Optional secrets — leave empty until you have them. Each `sync:
+      # false` shows up as an empty field in the Render dashboard for you
+      # to fill in or skip.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_ID_STARTER
+        sync: false
+      - key: STRIPE_PRICE_ID_PRO
+        sync: false
+      - key: STRIPE_PRICE_ID_BUSINESS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PROXY_URL
+        sync: false
+
+      - key: RATE_LIMIT_REQUESTS_PER_MIN
+        value: '100'
+
+  - type: keyvalue
+    name: yt-transcripts-redis
+    region: oregon
+    plan: free
+    # Empty IP allow-list = only services in the same Render account can
+    # reach it. The web service above connects through the internal URL.
+    ipAllowList: []
