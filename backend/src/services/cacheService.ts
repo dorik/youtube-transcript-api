@@ -45,7 +45,7 @@ export async function getCached(
     logger.warn({ err }, 'Cache: Redis lookup failed, trying Postgres');
   }
 
-  const { rows } = await pool.query<{
+  type Row = {
     video_id: string;
     language: string;
     title: string | null;
@@ -55,13 +55,35 @@ export async function getCached(
     transcript_text: string;
     segments: Segment[];
     first_cached_at: Date;
-  }>(
+  };
+
+  let rows: Row[];
+  ({ rows } = await pool.query<Row>(
     `SELECT video_id, language, title, channel, duration_seconds, source,
             transcript_text, segments, first_cached_at
      FROM cached_transcripts
      WHERE video_id = $1 AND language = $2 AND expires_at > NOW()`,
     [videoId, language],
-  );
+  ));
+
+  // Auto-language fallback: if the user asked for `auto` and we didn't
+  // find an exact-language row, return ANY cached language for this video.
+  // This lets production (cold Redis) benefit from Postgres entries that
+  // local dev populated under the actual returned language (e.g. 'bn'),
+  // instead of cache-missing and trying to fetch from YouTube — which
+  // datacenter IPs (Render) get blocked from.
+  if (rows.length === 0 && language === 'auto') {
+    ({ rows } = await pool.query<Row>(
+      `SELECT video_id, language, title, channel, duration_seconds, source,
+              transcript_text, segments, first_cached_at
+       FROM cached_transcripts
+       WHERE video_id = $1 AND expires_at > NOW()
+       ORDER BY first_cached_at ASC
+       LIMIT 1`,
+      [videoId],
+    ));
+  }
+
   if (!rows.length) return null;
 
   const row = rows[0];
