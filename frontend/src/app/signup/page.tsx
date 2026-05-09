@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,17 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { auth, billing, ApiError } from '@/lib/api';
 import { SiteNav } from '@/components/marketing/site-nav';
 
+// Suspense wrapper required for `useSearchParams()` during static render.
+// See login/page.tsx for the same pattern.
 export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupPageImpl />
+    </Suspense>
+  );
+}
+
+function SignupPageImpl() {
   const router = useRouter();
   const params = useSearchParams();
   const planParam = params.get('plan'); // optional ?plan=pro
@@ -34,7 +44,7 @@ export default function SignupPage() {
           const { url } = await billing.checkout(planParam);
           window.location.href = url;
           return;
-        } catch (err) {
+        } catch {
           toast.error('Could not start checkout — taking you to the dashboard.');
           // fall through to dashboard
         }
@@ -58,7 +68,7 @@ export default function SignupPage() {
               100 free credits, no card required.
               {planParam && (
                 <>
-                  {' '}You'll be sent to checkout for the <strong>{planParam}</strong> plan after signup.
+                  {' '}You&apos;ll be sent to checkout for the <strong>{planParam}</strong> plan after signup.
                 </>
               )}
             </p>

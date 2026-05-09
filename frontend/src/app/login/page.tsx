@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +11,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { auth, ApiError } from '@/lib/api';
 import { SiteNav } from '@/components/marketing/site-nav';
 
+// Next.js requires components calling `useSearchParams()` to be wrapped in
+// a Suspense boundary, otherwise the build refuses to prerender the page.
+// Splitting the default export into a thin Suspense shell + the real
+// component is the canonical fix.
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageImpl />
+    </Suspense>
+  );
+}
+
+function LoginPageImpl() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get('next') ?? '/dashboard';

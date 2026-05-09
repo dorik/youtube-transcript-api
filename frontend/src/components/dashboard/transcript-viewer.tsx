@@ -11,7 +11,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from '@/components/ui/select';
 import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
 import { SubtitleOverlay } from '@/components/dashboard/subtitle-overlay';
