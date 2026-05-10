@@ -50,9 +50,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => {
       cancelled = true;
     };
-    // Intentionally NOT including initialPath/router as deps — re-running
-    // on every dashboard navigation would spin the skeleton on every click.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap-only effect; re-running on initialPath/router changes would spin the skeleton on every dashboard navigation
   }, []);
 
   if (status === 'loading') {

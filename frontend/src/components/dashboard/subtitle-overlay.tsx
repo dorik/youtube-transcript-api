@@ -145,6 +145,10 @@ function SegmentLine({
         ...containerStyle,
       }}
     >
+      {/* Index keys are intentional: words within a single subtitle line
+          can repeat ("hello hello") so the word string can't be unique,
+          and the array is positionally stable across renders of the same
+          line. CLAUDE.md §14.3 exception. */}
       {words.map((word, i) => {
         const isActive = i === activeWordIdx;
         return (
