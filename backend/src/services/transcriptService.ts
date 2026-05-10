@@ -16,6 +16,7 @@ import {
   ApiError,
   NoTranscriptError,
   PaymentRequiredError,
+  RateLimitError,
   ValidationError,
 } from '../utils/errors';
 import { logger } from '../config/logger';
@@ -248,6 +249,19 @@ async function fetchTranscript(videoId: string, language: string, nativeOnly: bo
         throw err;
       }
       logger.info({ videoId }, 'No native captions; falling back to Whisper');
+      return await transcribeWithWhisper(videoId, language);
+    }
+    // YouTube is rate-limiting our IP (very common on datacenter hosts like
+    // Render where every tenant shares the same egress range). Native
+    // captions are unreachable until the throttle clears, but yt-dlp uses
+    // different YouTube endpoints and is usually still fine — fall back to
+    // Whisper instead of bubbling a 429 to the user.
+    if (err instanceof RateLimitError) {
+      if (nativeOnly) {
+        // Caller explicitly opted out of Whisper, so we have to surface it.
+        throw err;
+      }
+      logger.warn({ videoId }, 'YouTube throttled our IP; falling back to Whisper');
       return await transcribeWithWhisper(videoId, language);
     }
     if (err instanceof ApiError) throw err;
