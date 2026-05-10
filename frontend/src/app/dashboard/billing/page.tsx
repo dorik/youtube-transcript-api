@@ -8,25 +8,26 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
-import {
-  billing,
-  CreditState,
-  Plan,
-  Subscription,
-} from '@/lib/api';
 import { getApiErrorMessage } from '@/lib/apiError';
+import {
+  useBillingOverviewQuery,
+  useCheckoutMutation,
+  useStubActivateMutation,
+  type PaidPlanId,
+} from '@/features/billing';
 
 export default function BillingPage() {
   const params = useSearchParams();
   const router = useRouter();
 
-  const [data, setData] = useState<{
-    plans: Plan[];
-    sub: Subscription | null;
-    credits: CreditState;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
+
+  const billingOverviewQuery = useBillingOverviewQuery();
+  const checkoutMutation = useCheckoutMutation();
+  const stubActivateMutation = useStubActivateMutation();
+
+  const data = billingOverviewQuery.data;
+  const loading = billingOverviewQuery.isLoading;
 
   // Stub-mode redirect handling: if we arrive with ?stub_success=1&plan=…
   // call the stub-activate endpoint and refresh.
@@ -34,58 +35,34 @@ export default function BillingPage() {
     const stubSuccess = params.get('stub_success');
     const planParam = params.get('plan');
     if (stubSuccess && (planParam === 'starter' || planParam === 'pro' || planParam === 'business')) {
-      billing
-        .stubActivate(planParam)
-        .then(() => {
+      stubActivateMutation.mutate(planParam, {
+        onSuccess: () => {
           toast.success(`Upgraded to ${planParam} (stub)`);
           // Strip the URL params so a refresh doesn't re-activate
           router.replace('/dashboard/billing');
-          load();
-        })
-        .catch((err: unknown) => {
+        },
+        onError: (err) => {
           toast.error(getApiErrorMessage(err, 'Stub activation failed'));
-        });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount; re-running on params change is intentional via the URL-driven stub flow only
-  }, []);
-
-  async function load() {
-    setLoading(true);
-    try {
-      const [plansResp, subResp] = await Promise.all([billing.plans(), billing.subscription()]);
-      setData({
-        plans: plansResp.plans,
-        sub: subResp.subscription,
-        credits: subResp.credits,
+        },
       });
-    } catch (err) {
-      toast.error(getApiErrorMessage(err, 'Could not load billing'));
-    } finally {
-      setLoading(false);
     }
-  }
+  }, [params, router, stubActivateMutation]);
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function onUpgrade(planId: 'starter' | 'pro' | 'business') {
+  function onUpgrade(planId: PaidPlanId) {
     setBusyPlan(planId);
-    try {
-      const { url, mode } = await billing.checkout(planId);
-      // Full-document redirect both ways. Stripe checkout requires it (it's
-      // a third-party origin); the stub mode bounces back to our own
-      // /dashboard/billing?stub_success=1, where the on-mount effect picks
-      // it up. router.push wouldn't trigger that re-mount.
-      if (mode === 'live') {
+    checkoutMutation.mutate(planId, {
+      onSuccess: ({ url }) => {
+        // Full-document redirect both ways. Stripe checkout requires it (it's
+        // a third-party origin); the stub mode bounces back to our own
+        // /dashboard/billing?stub_success=1, where the URL-driven effect picks
+        // it up. router.push wouldn't trigger that re-mount.
         window.location.href = url;
-      } else {
-        window.location.href = url;
-      }
-    } catch (err) {
-      toast.error(getApiErrorMessage(err, 'Could not start checkout'));
-      setBusyPlan(null);
-    }
+      },
+      onError: (err) => {
+        toast.error(getApiErrorMessage(err, 'Could not start checkout'));
+        setBusyPlan(null);
+      },
+    });
   }
 
   return (
@@ -107,9 +84,9 @@ export default function BillingPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
               <div>
                 <p className="text-sm text-muted-foreground">Plan</p>
-                <p className="text-2xl font-bold">{data?.sub?.plan_name ?? 'Free'}</p>
+                <p className="text-2xl font-bold">{data?.subscription?.plan_name ?? 'Free'}</p>
                 <p className="text-xs text-muted-foreground capitalize">
-                  {data?.sub?.status ?? 'active'}
+                  {data?.subscription?.status ?? 'active'}
                 </p>
               </div>
               <div>
@@ -117,15 +94,15 @@ export default function BillingPage() {
                 <p className="text-2xl font-bold">
                   {data?.credits.balance.toLocaleString()}{' '}
                   <span className="text-sm font-normal text-muted-foreground">
-                    / {data?.sub?.monthly_credits.toLocaleString() ?? 100}
+                    / {data?.subscription?.monthly_credits.toLocaleString() ?? 100}
                   </span>
                 </p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Renews</p>
                 <p className="text-2xl font-bold">
-                  {data?.sub?.billing_cycle_end
-                    ? new Date(data.sub.billing_cycle_end).toLocaleDateString()
+                  {data?.subscription?.billing_cycle_end
+                    ? new Date(data.subscription.billing_cycle_end).toLocaleDateString()
                     : '—'}
                 </p>
               </div>
@@ -138,7 +115,7 @@ export default function BillingPage() {
       <h2 className="text-xl font-semibold mt-4">Change plan</h2>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {(data?.plans ?? []).map((plan) => {
-          const isCurrent = data?.sub?.plan_id === plan.id;
+          const isCurrent = data?.subscription?.plan_id === plan.id;
           const highlighted = plan.id === 'pro';
           return (
             <Card
@@ -175,7 +152,7 @@ export default function BillingPage() {
                   <Button
                     className="mt-auto"
                     variant={highlighted ? 'default' : 'outline'}
-                    onClick={() => onUpgrade(plan.id as 'starter' | 'pro' | 'business')}
+                    onClick={() => onUpgrade(plan.id as PaidPlanId)}
                     disabled={busyPlan !== null}
                   >
                     {busyPlan === plan.id ? 'Redirecting…' : `Upgrade to ${plan.name}`}

@@ -1,6 +1,6 @@
 # Frontend Guide for AI Agents
 
-You are editing `frontend/`, a Next.js 14 App Router app (TS, Tailwind, shadcn/ui, react-hook-form, Sonner). API calls go through `src/lib/api.ts` — there is **no React Query** in this codebase yet.
+You are editing `frontend/`, a Next.js 14 App Router app (TS, Tailwind, shadcn/ui, react-hook-form, Sonner, TanStack React Query). API calls go through typed service functions and React Query hooks — components must not call API clients inline.
 
 This file is the contract you must follow. Read it before writing code; reread the relevant section before each edit.
 
@@ -10,7 +10,7 @@ This file is the contract you must follow. Read it before writing code; reread t
 
 1. **No `any`.** Anywhere. Use `unknown` + a narrowing check, or define the type. ([§9](#9-type-safety))
 2. **No inline functions between hook calls.** Hooks come first, in the order in [§2](#2-hook-ordering). Plain functions and helpers go after, never between.
-3. **No copying props into `useState` and syncing with `useEffect`.** Use the prop directly, or remount with `key=`, or use `useDebouncedValue`. ([§14.1](#141-no-derived-state-from-props))
+3. **No copying props into `useState` and syncing with `useEffect`.** Use the prop directly, remount with `key=`, or derive the delayed value explicitly. ([§14.1](#141-no-derived-state-from-props))
 4. **No `useEffect` to react to a state change you just set in a click handler.** Call the logic directly in the handler. ([§14.2](#142-no-useeffect-as-event-handler))
 5. **No new objects/arrays inline as props to memoized children.** Wrap in `useMemo` / `useCallback`. ([§14.5](#145-no-unstable-references-as-props))
 
@@ -24,13 +24,13 @@ Before you say "done":
 
 ```bash
 cd frontend
-npx tsc --noEmit       # zero errors
+npm run type-check     # zero errors
 npm run lint           # zero warnings
 ```
 
 If either fails, your change is not done. Fix the cause, do not silence with `// @ts-ignore` or `eslint-disable`.
 
-The repo currently has only `next dev`/`build`/`start`/`lint` scripts — `tsc --noEmit` is invoked directly until a `type-check` script is added.
+Do not replace type errors with casts just to pass this gate.
 
 ---
 
@@ -52,22 +52,25 @@ function MyComponent({ url }: Props) {
   // 3. useRef
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // 4. useMemo — derived state
+  // 4. React Query hooks — server state only
+  const thingQuery = useThingQuery(url);
+
+  // 5. useMemo — derived state
   const videoId = useMemo(() => extractVideoId(url), [url]);
 
-  // 5. useCallback — event handlers passed as props or used by hooks below
+  // 6. useCallback — event handlers passed as props or used by hooks below
   const handleSubmit = useCallback(() => { /* ... */ }, [/* deps */]);
 
-  // 6. useEffect — ALWAYS the last hook category
+  // 7. useEffect — ALWAYS the last hook category
   useEffect(() => { /* ... */ }, [/* deps */]);
 
-  // 7. Plain helper functions (only pure formatters, never passed as props)
+  // 8. Plain helper functions (only pure formatters, never passed as props)
   function formatLabel(s: string) { return s.trim().slice(0, 60); }
 
-  // 8. Early returns / loading gates
+  // 9. Early returns / loading gates
   if (!videoId) return null;
 
-  // 9. JSX
+  // 10. JSX
   return <div>{/* ... */}</div>;
 }
 ```
@@ -75,8 +78,8 @@ function MyComponent({ url }: Props) {
 Rules:
 - `useState` is **never** placed after `useEffect`, `useCallback`, `useMemo`, or any other hook.
 - `useEffect` is **always** the last hook before plain helpers.
-- No `function` declarations between hook calls. Convert to `useCallback` (#5) or move below all hooks (#7).
-- This codebase has no React Query yet; if you introduce it, its hooks slot between `useRef` and `useMemo`.
+- No `function` declarations between hook calls. Convert to `useCallback` or move below all hooks.
+- React Query hooks slot between `useRef` and `useMemo`. Do not hide React Query hooks inside `useEffect`.
 
 ---
 
@@ -86,7 +89,7 @@ These are guidelines, not gates. Use them to decide when to split — exceeding 
 
 | Type | Aim for | Consider splitting around | When you exceed |
 |------|---------|----------------------------|-----------------|
-| Route page (`page.tsx`) | ≤ 150 lines | 250 lines | Extract a container component into `src/components/{feature}/` |
+| Route page (`page.tsx`) | ≤ 150 lines | 250 lines | Extract a container component into `src/features/{feature}/` |
 | Container component | ≤ 250 lines | 400 lines | Split into sub-components + custom hooks |
 | Presentational component | ≤ 150 lines | 250 lines | Split into smaller pieces |
 | Hook file | ≤ 200 lines | 300 lines | Split by sub-concern |
@@ -102,39 +105,106 @@ These thresholds are **suggestions**. Don't refactor a 260-line file just to hit
 
 ---
 
-## 4. Data fetching
+## 4. Data Fetching
 
-### 4.1 Always go through `src/lib/api.ts`
+### 4.1 Components use query hooks, never inline API calls
 
-Components must **never** call `fetch()` directly. They must **never** read `process.env.NEXT_PUBLIC_API_URL` themselves.
+Components must **never** call `fetch()` directly. They must **never** call API namespaces inline. They must **never** read `process.env.NEXT_PUBLIC_API_URL` themselves.
 
 ```typescript
 // BAD
 const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/me/transcript?...`);
 
-// GOOD
+// BAD
 import { transcripts } from "@/lib/api";
 const data = await transcripts.fetchAsUser({ url });
+
+// BAD
+const { keys } = await apiKeys.list();
+
+// GOOD
+const { data, isLoading } = useApiKeysQuery();
+const createKeyMutation = useCreateApiKeyMutation();
 ```
 
-If a new endpoint is needed, **add it as a typed function in `src/lib/api.ts`**, do not add a one-off fetch in a component.
+If a new endpoint is needed, add it to the service layer first, then expose it through a query/mutation hook. Do not add a one-off fetch or API call in a component.
 
-### 4.2 The `api()` wrapper is the contract
+### 4.2 Service files own HTTP calls
+
+Services are the only feature-level files that define HTTP requests. Keep them framework-free: no React, no hooks, no toast. Service exports should be `createApi(...)` constants backed by a small query/request builder function.
+
+```typescript
+// src/features/oauth/oauth.service.ts
+import { apiClient } from "@/lib/http/client";
+import { createApi } from "@/lib/http/createApi";
+import { methodsEnums } from "@/lib/http/constants";
+
+export interface GetOAuthUrlKeys {
+  workspaceId: string;
+}
+
+export interface GetOAuthUrlResponse {
+  url: string;
+}
+
+function getOAuthUrlQuery({ workspaceId }: GetOAuthUrlKeys) {
+  return {
+    url: `/workspaces/${workspaceId}/oauth-url`,
+    method: methodsEnums.GET,
+  };
+}
+
+export const getOAuthUrl = createApi<GetOAuthUrlKeys, GetOAuthUrlResponse>({
+  queryFn: apiClient,
+  query: getOAuthUrlQuery,
+});
+```
+
+Service rules:
+- One service file per domain when practical: `{domain}.service.ts`.
+- Every function has explicit request and response types.
+- Build request details in named helpers like `getOAuthUrlQuery`, `createApiKeyQuery`, etc.
+- Export service functions as `const name = createApi<TVariables, TResponse>({ queryFn: apiClient, query })`.
+- Services may compose API calls, normalize request params, and return typed data.
+- Services do not know about React Query, components, toasts, routing, or localStorage unless the domain explicitly requires browser storage.
+
+### 4.3 Query files own TanStack React Query hooks
+
+Query hooks live beside the feature they serve. Components import hooks from the feature public surface, not services.
+
+```typescript
+// src/features/oauth/oauth.queries.ts
+import { useMutation } from "@tanstack/react-query";
+import { getOAuthUrl } from "./oauth.service";
+import type { GetOAuthUrlKeys, GetOAuthUrlResponse } from "./types";
+
+export const useGetOAuthUrl = () => {
+  return useMutation<GetOAuthUrlResponse, Error, GetOAuthUrlKeys>({
+    mutationFn: (params) => getOAuthUrl(params),
+  });
+};
+```
+
+Query rules:
+- Use `useQuery` for reads and `useMutation` for writes/actions.
+- Use a per-feature `queryKeys.ts` factory; no inline string keys.
+- Mutations use `retry: false` unless there is a product reason to retry.
+- Invalidate or update query cache after successful mutations instead of manually re-fetching from components.
+- Components should not use `useEffect` to fetch server data. If you see `useEffect(() => { apiKeys.list()... })`, extract a query hook.
+
+### 4.4 The `api()` wrapper is the contract
 
 `src/lib/api.ts` is the single source of truth for endpoint shapes. Every endpoint:
 - Has a TypeScript request type and a TypeScript response type — no `any`, no `Record<string, unknown>` masquerading as a real type.
-- Throws `ApiError` (already defined in that file) on non-2xx; callers `try/catch` on `ApiError`, never silently swallow.
+- Throws `ApiError` (already defined in that file) on non-2xx; services let it bubble to React Query.
 - Uses `credentials: 'include'` so the JWT cookie travels (already wired in `api()`).
 
-### 4.3 Future: React Query
+### 4.5 React Query defaults
 
-If/when React Query is introduced, the rules from the source guide apply:
-- Per-feature `queryKeys.ts` factory; no inline string keys.
-- Mutations: `retry: false` and an `onError` (or rely on a global `MutationCache.onError`).
-- `QueryProvider` configures global `onError` for both queries and mutations → toast.
-- Default `staleTime: 30000`. Never `staleTime: 0` unless data is genuinely real-time.
-
-Do not add React Query "while you're at it" — add it as its own focused PR with provider, devtools, and at least one migrated endpoint.
+- `QueryProvider` configures global `onError` for queries and mutations when possible.
+- Prefer global toast/error handling. Add local `onError` only when the component needs custom recovery UX.
+- Default `staleTime: 30_000`. Never `staleTime: 0` unless data is genuinely real-time.
+- Keep `refetchIntervalInBackground` at the default `false`.
 
 ---
 
@@ -142,7 +212,7 @@ Do not add React Query "while you're at it" — add it as its own focused PR wit
 
 | Use case | Tool |
 |----------|------|
-| Server data | `api()` (today) → React Query (future) |
+| Server data | TanStack React Query hooks from feature `*.queries.ts` |
 | Simple UI toggle (1–2 booleans) | `useState` |
 | 5+ coordinated fields | `useReducer` with typed actions |
 | Forms with validation | `react-hook-form` + zod |
@@ -248,7 +318,57 @@ onClick={handleConfirm}
 
 Single-statement inline handlers (`onClick={() => setOpen(false)}`) are fine.
 
-### 7.3 Pure utilities go in `src/lib/`
+### 7.3 Debounced handlers use lodash
+
+Use `lodash/debounce` for debounced handlers. Memoize the debounced function and cancel it on unmount.
+
+```typescript
+// GOOD — debounced side effect / action
+const handleSearch = useMemo(
+  () => debounce((query: string) => runSearch(query), 500),
+  [runSearch],
+);
+
+useEffect(() => () => handleSearch.cancel(), [handleSearch]);
+
+<Input onChange={(e) => handleSearch(e.target.value)} />
+```
+
+Do **not** debounce the state setter that controls an input's `value`; the field will lag or appear stuck.
+
+```typescript
+// BAD — controlled value updates only after the debounce delay
+const handleSearch = useMemo(
+  () => debounce(({ target }: React.ChangeEvent<HTMLInputElement>) => {
+    setSearch(target.value);
+  }, 500),
+  [],
+);
+
+<Input value={search} onChange={handleSearch} />
+
+// GOOD — input updates immediately, query key updates later
+const [search, setSearch] = useState("");
+const [query, setQuery] = useState("");
+const updateQuery = useMemo(
+  () => debounce((next: string) => setQuery(next), SEARCH_DEBOUNCE_MS),
+  [],
+);
+
+useEffect(() => () => updateQuery.cancel(), [updateQuery]);
+
+<Input
+  value={search}
+  onChange={(e) => {
+    setSearch(e.target.value);
+    updateQuery(e.target.value);
+  }}
+/>
+```
+
+Use direct `debounce(...)` for callbacks/events. When a controlled input drives a query/filter, keep the rendered input state immediate and debounce the query/filter update separately.
+
+### 7.4 Pure utilities go in `src/lib/`
 
 Date math, string formatting, URL parsing — extract to `src/lib/{concern}.ts`. Do not inline them inside component bodies. Existing examples: `src/lib/youtube-url.ts`, `src/lib/languages.ts`.
 
@@ -262,14 +382,14 @@ Date math, string formatting, URL parsing — extract to `src/lib/{concern}.ts`.
 Layer 1: app/global-error.tsx              — Root fallback (add if missing)
 Layer 2: app/dashboard/error.tsx           — Dashboard boundary
 Layer 3: Per-route error.tsx               — High-risk routes (transcript viewer, billing)
-Layer 4: Toast on caught api()/ApiError    — User-visible failure
+Layer 4: React Query/global toast handling — User-visible failure
 ```
 
 If you touch a route that lacks an `error.tsx` and it does any non-trivial work, add one.
 
 ### 8.2 Extract API error messages with one helper
 
-Today, every component reaches into `err instanceof ApiError ? err.message : "Could not …"` inline. Consolidate this in `src/lib/apiError.ts` with `getApiErrorMessage(error, fallback)` and use it everywhere.
+Components should not manually catch server-data query errors. For local async actions that are not React Query mutations, use `src/lib/apiError.ts` with `getApiErrorMessage(error, fallback)`.
 
 ```typescript
 // BAD
@@ -329,7 +449,7 @@ const failed = results.filter((r) => r === null).length;
 - The only allowed exception: a third-party adapter where the upstream types are wrong, marked with `// any: <reason>` directly above.
 - Component props always have an explicit `interface` or `type`. No `props: any`.
 - Don't suppress missing modules with `// @ts-ignore` — install types or write `.d.ts`.
-- `tsc --noEmit` passes before merge.
+- `npm run type-check` passes before merge.
 
 `unknown` + a runtime narrow is the right escape hatch:
 
@@ -425,6 +545,10 @@ frontend/src/
     ui/                         — shadcn primitives. Do NOT restyle.
     dashboard/                  — Dashboard-only shared components
     marketing/                  — Marketing-only shared components
+    transcripts-history/        — Small shared/presentational feature pieces
+  features/
+    playground/                 — Feature containers, services, queries, helpers
+    transcript-viewer/
   lib/
     api.ts                      — THE typed API client. Single source of truth.
     youtube-url.ts              — URL parsing/normalization
@@ -435,15 +559,18 @@ frontend/src/
 
 ### 12.2 Per-feature folder shape (the convention to follow)
 
-When a feature accumulates more than one component or one helper, lift it into its own folder under `src/components/{feature}/`. The shape is:
+When a route or workflow accumulates more than one component, service, query hook, or helper, lift it into its own folder under `src/features/{feature}/`. Small presentational-only pieces that are reused by a dashboard route may live under `src/components/{feature}/`, but server-data features belong in `src/features/`.
 
 ```
-src/components/{feature}/
+src/features/{feature}/
   index.ts              — Re-exports the public surface (named exports only)
   {Feature}.tsx         — The container/entry component (≤ 250 lines target)
   {Subcomponent}.tsx    — Presentational pieces split out from the container
   types.ts              — Types shared across this feature's files
   utils.ts              — Pure helpers used only by this feature (≤ 200 lines target)
+  {feature}.service.ts  — Typed framework-free createApi exports
+  {feature}.queries.ts  — useQuery/useMutation hooks only
+  queryKeys.ts          — Query key factory; no inline string keys
   hooks/                — Hooks shared across files in this feature
     use{Behavior}.ts
   __tests__/            — Co-located tests (when added)
@@ -453,21 +580,24 @@ Rules:
 
 - **`types.ts` is mandatory** for any feature with > 1 component. Component-local prop types stay in the component file; anything shared (entity shapes, event payloads, enums) moves to `types.ts`.
 - **`utils.ts` is for pure functions only** — no React, no API calls, no state. If a util is used outside this feature, promote it to `src/lib/{concern}.ts`.
+- **`*.service.ts` is for API/service functions only** — no React hooks, no components, no toast. Components do not import services directly.
+- **`*.queries.ts` is for TanStack React Query hooks only** — components import these hooks for server data through the feature `index.ts`.
 - **`hooks/`** appears when the feature owns 2+ custom hooks ([§15.2](#152-where-to-put-it)). One hook can stay alongside its consumer.
 - **`index.ts`** re-exports only what other features should consume — keep internals private. Example:
   ```typescript
-  // src/components/transcript-viewer/index.ts
+  // src/features/transcript-viewer/index.ts
   export { TranscriptViewer } from "./TranscriptViewer";
   export type { TranscriptViewerProps } from "./types";
   ```
 
 Existing today (do not refactor unless you're already touching them):
-- `src/components/dashboard/transcript-viewer.tsx` — single file. If it grows past ~250 lines or sprouts a sibling, lift it into `src/components/transcript-viewer/` per the shape above.
+- `src/features/transcript-viewer/` — transcript viewer feature folder.
+- `src/features/playground/` — playground route feature folder.
 - `src/components/dashboard/{sidebar,topbar,subtitle-overlay,subtitle-settings-popover}.tsx` — same rule.
 
 ### 12.3 API client / service layer
 
-`src/lib/api.ts` is the **single source of truth** for endpoint shapes today. As it grows, split by subdomain — do **not** create one-off fetch helpers in components.
+`src/lib/api.ts` is the low-level typed API client and endpoint-shape source of truth. Feature service files call it; components do not. As it grows, split `src/lib/api.ts` by subdomain — do **not** create one-off fetch helpers in components.
 
 ```
 src/lib/api/
@@ -486,7 +616,8 @@ Rules:
 - **Every endpoint has an explicit request type AND response type.** No `any`, no `Record<string, unknown>` masquerading as a real type. Types live in `src/lib/api/types.ts` (shared) or alongside their endpoint (feature-specific).
 - **Throw `ApiError` on non-2xx.** Already implemented in `client.ts` — don't re-implement per call site.
 - **Never read `process.env.NEXT_PUBLIC_API_URL` outside `client.ts`.**
-- Until the split happens, keep adding endpoints to the existing flat `src/lib/api.ts` — but split when it crosses ~300 lines.
+- **Never call `src/lib/api.ts` directly from a component.** Add or reuse a service function, then expose a query/mutation hook.
+- Until the split happens, keep endpoint definitions in the existing flat `src/lib/api.ts` — but split when it crosses ~300 lines.
 
 ### 12.4 Pure utilities → `src/lib/`
 
@@ -497,18 +628,17 @@ Decision tree for where a helper goes:
 | Used by | Put it in |
 |---------|-----------|
 | One component | Same file (top-of-file `function`) |
-| Multiple files in one feature | `src/components/{feature}/utils.ts` |
+| Multiple files in one feature | `src/features/{feature}/utils.ts` |
 | Multiple features | `src/lib/{concern}.ts` |
 | API request/response shapes | `src/lib/api/types.ts` (or feature endpoint file) |
 | App-wide constants (timeouts, page sizes) | `src/lib/constants.ts` |
 
 ### 12.5 Hooks
 
-There is no `src/lib/hooks/` directory yet. Create it when extracting the second shared hook ([§15.2](#152-where-to-put-it)).
+`src/lib/hooks/` is for UI/browser behavior shared across features. It is **not** for server data hooks; React Query hooks live in `src/features/{feature}/{feature}.queries.ts`.
 
 ```
 src/lib/hooks/
-  useDebouncedValue.ts
   useCopyToClipboard.ts
   useKeyboardShortcut.ts
   …
@@ -570,9 +700,9 @@ For lists, prefer formatting once outside the row component or memoizing inside 
 
 ### 13.5 Polling respects tab visibility
 
-Manual `setInterval` polling must check `document.hidden` and skip. If you add React Query, leave `refetchIntervalInBackground` at the default `false`.
+Manual `setInterval` polling must check `document.hidden` and skip. React Query polling must leave `refetchIntervalInBackground` at the default `false`.
 
-### 13.6 `staleTime` (when React Query lands)
+### 13.6 `staleTime`
 
 - Default: `30_000`.
 - Stable data (user profile, plan): `60_000+`.
@@ -595,8 +725,8 @@ useEffect(() => setLocal(filters), [filters]);
 // GOOD — uncontrolled with reset on identity change
 <FilterEditor key={filterId} defaultFilters={filters} onChange={onChange} />
 
-// GOOD — debounce
-const debounced = useDebouncedValue(filters, 300);
+// GOOD — derive delayed filter state separately when needed
+const [queryFilters, setQueryFilters] = useState(filters);
 ```
 
 ### 14.2 No `useEffect` as event handler
@@ -669,15 +799,15 @@ If you don't know the shape, define `unknown` and narrow at the use site. Compon
 Extract a hook when:
 - The same `useState` + `useEffect` combo appears in 2+ components.
 - A component has 3+ `useEffect`s.
-- The behavior has a verb name (`useDebouncedValue`, `useKeyboardShortcut`).
+- The behavior has a verb name (`useKeyboardShortcut`, `useCopyToClipboard`).
 
 ### 15.2 Where to put it
 
 | Scope | Location |
 |-------|----------|
 | Used by 1 component | Same file or sibling file in that route folder |
-| Used by 2+ components in same feature | `src/components/{feature}/hooks/` |
-| Used across features | `src/lib/hooks/` (create when first needed) |
+| Used by 2+ components in same feature | `src/features/{feature}/hooks/` |
+| Used across features | `src/lib/hooks/` |
 
 ### 15.3 Recommended shared hooks (build when needed)
 
@@ -685,7 +815,6 @@ Don't pre-build these — but when the second copy of one of these patterns appe
 
 | Hook | Purpose |
 |------|---------|
-| `useDebouncedValue(value, ms)` | Debounce any value |
 | `useCopyToClipboard()` | Copy text + toast + try/catch around clipboard API |
 | `useKeyboardShortcut(binding, handler, enabled?)` | Global keybindings |
 | `useInfiniteScrollSentinel(onLoadMore)` | IntersectionObserver-based infinite scroll |
@@ -737,10 +866,12 @@ useEffect(() => {
 
 ### 16.4 Async state updates guard against unmount
 
+This applies only to non-server async work that cannot be represented as a React Query hook. Do not use this pattern for API reads; create a query hook instead.
+
 ```typescript
 useEffect(() => {
   let cancelled = false;
-  fetchThing(id).then((data) => {
+  readBrowserThing(id).then((data) => {
     if (!cancelled) setData(data);
   });
   return () => { cancelled = true; };

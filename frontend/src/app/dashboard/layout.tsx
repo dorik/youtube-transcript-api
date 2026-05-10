@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { DashboardSidebar } from '@/components/dashboard/sidebar';
 import { DashboardTopbar } from '@/components/dashboard/topbar';
 import { Skeleton } from '@/components/ui/skeleton';
-import { auth, type User } from '@/lib/api';
+import { useCurrentUserQuery } from '@/features/auth';
 
 /**
  * Client-side auth guard for the dashboard.
@@ -27,36 +27,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // initial dashboard entry — not on every sidebar click. The router
   // replace below uses this snapshot for the ?next= param.
   const initialPath = usePathname();
-  const [user, setUser] = useState<User | null>(null);
   const [status, setStatus] = useState<'loading' | 'authed' | 'unauthed'>('loading');
+  const currentUserQuery = useCurrentUserQuery();
 
   useEffect(() => {
-    let cancelled = false;
-    auth
-      .me()
-      .then(({ user }) => {
-        if (cancelled) return;
-        setUser(user);
-        setStatus('authed');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setStatus('unauthed');
-        // Use replace so back-button doesn't loop the user back into the
-        // protected page they were trying to reach.
-        const next = initialPath || '/dashboard';
-        router.replace(`/login?next=${encodeURIComponent(next)}`);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap-only effect; re-running on initialPath/router changes would spin the skeleton on every dashboard navigation
-  }, []);
+    if (currentUserQuery.isSuccess) {
+      setStatus('authed');
+      return;
+    }
+    if (currentUserQuery.isError) {
+      setStatus('unauthed');
+      // Use replace so back-button doesn't loop the user back into the
+      // protected page they were trying to reach.
+      const next = initialPath || '/dashboard';
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
+    }
+  }, [currentUserQuery.isError, currentUserQuery.isSuccess, initialPath, router]);
 
   if (status === 'loading') {
     return <DashboardLoadingSkeleton />;
   }
-  if (status === 'unauthed' || !user) {
+  if (status === 'unauthed' || !currentUserQuery.data?.user) {
     // Render nothing while the redirect is in flight; avoids a flash of
     // dashboard chrome before the router push lands.
     return null;
@@ -64,7 +55,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen flex flex-col">
-      <DashboardTopbar userEmail={user.email} />
+      <DashboardTopbar userEmail={currentUserQuery.data.user.email} />
       <div className="flex flex-1">
         <DashboardSidebar />
         <main className="flex-1 p-6 md:p-8">{children}</main>

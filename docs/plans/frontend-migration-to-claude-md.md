@@ -415,12 +415,12 @@ src/components/transcripts-history/
   utils.ts
 ```
 
-Hoist debouncer to `useDebouncedValue` in `src/lib/hooks/useDebouncedValue.ts` (this is the second extracted hook → `src/lib/hooks/` is now justified per §15.2).
+Keep search input state immediate and debounce the query/filter update with `lodash/debounce` in the page or feature container.
 
 **Deliverables (3 PRs):**
 - `refactor(playground): split into feature components`
 - `refactor(transcript-viewer): split into feature folder, memoize segment rows`
-- `refactor(transcripts-history): extract feature components, useDebouncedValue hook`
+- `refactor(transcripts-history): extract feature components, debounce search query`
 
 ---
 
@@ -496,7 +496,7 @@ src/lib/api/
 
 Migrate one namespace per PR. Update import sites: `import { auth } from "@/lib/api"` → still works because `index.ts` re-exports.
 
-### 4.4 Create `src/lib/hooks/` (already justified by Phase 2.3 if `useDebouncedValue` extracted)
+### 4.4 Create `src/lib/hooks/` when multiple shared UI hooks exist
 
 Per §15.3, also extract these as second-instances appear:
 - `useCopyToClipboard` (currently inline in transcript-viewer copy button)
@@ -540,7 +540,6 @@ Copy this into the PR description for each phase.
 - [ ] No file > 250 lines (excluding `src/components/ui/` shadcn primitives)
 - [ ] Playground feature folder exists at `src/components/playground/`
 - [ ] Transcript viewer feature folder exists at `src/components/transcript-viewer/`
-- [ ] `src/lib/hooks/useDebouncedValue.ts` exists
 - [ ] No component has > 5 useState or > 3 useEffect
 
 ### Phase 3

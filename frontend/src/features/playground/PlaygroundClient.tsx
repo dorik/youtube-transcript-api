@@ -23,15 +23,17 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   API_BASE_URL,
-  apiKeys as apiKeysClient,
-  transcripts,
   TranscriptResponse,
   TranscriptSegment,
-  type ApiKey,
 } from '@/lib/api';
 import { getApiErrorMessage } from '@/lib/apiError';
 import { listStashedKeys, getStashedKey } from '@/lib/key-stash';
 import { SOURCE_LANGUAGE_OPTIONS, TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
+import { useApiKeysQuery } from '@/features/api-keys';
+import {
+  useFetchTranscriptAsUserMutation,
+  useFetchTranscriptWithBearerMutation,
+} from '@/features/transcripts';
 
 const FORMATS = ['json', 'text', 'text-timestamps', 'srt', 'vtt'] as const;
 type Format = (typeof FORMATS)[number];
@@ -58,7 +60,6 @@ export function PlaygroundClient() {
   // look up plaintext from a browser-local stash. If the plaintext for the
   // chosen key isn't available (e.g. created in another browser), we fall
   // back to cookie-authed /me/transcript so the playground still works.
-  const [serverKeys, setServerKeys] = useState<ApiKey[] | null>(null);
   const [selectedKeyId, setSelectedKeyId] = useState<string>('');
   const [manualKey, setManualKey] = useState('');
   const [showManual, setShowManual] = useState(false);
@@ -67,23 +68,23 @@ export function PlaygroundClient() {
   const [results, setResults] = useState<BulkResultEntry[] | null>(null);
   const [activeResultIdx, setActiveResultIdx] = useState(0);
 
-  // Hydrate server-side keys for the dropdown.
+  const apiKeysQuery = useApiKeysQuery();
+  const fetchAsUserMutation = useFetchTranscriptAsUserMutation();
+  const fetchWithBearerMutation = useFetchTranscriptWithBearerMutation();
+  const serverKeys = useMemo(
+    () => apiKeysQuery.data?.keys.filter((k) => !k.is_revoked) ?? [],
+    [apiKeysQuery.data?.keys],
+  );
+
+  // Pick a default server-side key when the query resolves.
   useEffect(() => {
-    apiKeysClient
-      .list()
-      .then(({ keys }) => {
-        const active = keys.filter((k) => !k.is_revoked);
-        setServerKeys(active);
-        if (active.length > 0) {
-          // Prefer a key we actually have plaintext for; falls back to the
-          // most recent so the user can still pick something even without it.
-          const stashed = listStashedKeys();
-          const usable = active.find((k) => stashed.some((s) => s.id === k.id));
-          setSelectedKeyId((prev) => prev || usable?.id || active[0].id);
-        }
-      })
-      .catch(() => setServerKeys([]));
-  }, []);
+    if (serverKeys.length === 0) return;
+    // Prefer a key we actually have plaintext for; falls back to the
+    // most recent so the user can still pick something even without it.
+    const stashed = listStashedKeys();
+    const usable = serverKeys.find((k) => stashed.some((s) => s.id === k.id));
+    setSelectedKeyId((prev) => prev || usable?.id || serverKeys[0].id);
+  }, [serverKeys]);
 
   const videoList = useMemo(() => parseVideoLines(videosText), [videosText]);
 
@@ -150,8 +151,8 @@ export function PlaygroundClient() {
           translate_to: translateTo === 'none' ? undefined : translateTo,
         };
         const data = selectedPlaintext
-          ? await transcripts.fetch(selectedPlaintext, params)
-          : await transcripts.fetchAsUser(params);
+          ? await fetchWithBearerMutation.mutateAsync({ bearer: selectedPlaintext, ...params })
+          : await fetchAsUserMutation.mutateAsync(params);
         acc.push({ url: v.url, ok: true, data });
       } catch (err) {
         acc.push({
@@ -205,7 +206,7 @@ export function PlaygroundClient() {
                       value={manualKey}
                       onChange={(e) => setManualKey(e.target.value)}
                     />
-                  ) : serverKeys === null ? (
+                  ) : apiKeysQuery.isLoading ? (
                     <Skeleton className="h-9" />
                   ) : serverKeys.length === 0 ? (
                     <div className="rounded-md border border-dashed bg-muted/30 p-3 text-sm">
@@ -246,7 +247,7 @@ export function PlaygroundClient() {
                   )}
 
                   {/* Status note explaining which auth path will be used. */}
-                  {!showManual && serverKeys && serverKeys.length > 0 && (
+                  {!showManual && serverKeys.length > 0 && (
                     <p className="text-xs text-muted-foreground">
                       {authMode === 'bearer' ? (
                         <>

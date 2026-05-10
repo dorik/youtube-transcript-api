@@ -1,33 +1,18 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { billing, usage as usageApi, UsageResponse, Subscription, CreditState } from '@/lib/api';
+import { useBillingSubscriptionQuery } from '@/features/billing';
+import { useUsageQuery } from '@/features/usage';
 
 export default function OverviewPage() {
-  const [data, setData] = useState<{
-    sub: { subscription: Subscription | null; credits: CreditState };
-    usage: UsageResponse;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    Promise.all([billing.subscription(), usageApi.get()])
-      .then(([sub, usage]) => {
-        if (alive) {
-          setData({ sub, usage });
-          setLoading(false);
-        }
-      })
-      .catch(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const billingQuery = useBillingSubscriptionQuery();
+  const usageQuery = useUsageQuery();
+  const loading = billingQuery.isLoading || usageQuery.isLoading;
+  const billingData = billingQuery.data;
+  const usageData = usageQuery.data;
 
   return (
     <div className="space-y-6">
@@ -44,36 +29,36 @@ export default function OverviewPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Credits remaining"
-          value={data?.sub.credits.balance.toLocaleString() ?? '—'}
+          value={billingData?.credits.balance.toLocaleString() ?? '—'}
           loading={loading}
           hint={
-            data?.sub.credits.next_reset_at
-              ? `Resets ${formatDate(data.sub.credits.next_reset_at)}`
+            billingData?.credits.next_reset_at
+              ? `Resets ${formatDate(billingData.credits.next_reset_at)}`
               : undefined
           }
         />
         <StatCard
           label="Requests today"
-          value={data?.usage.totals.requests_today.toLocaleString() ?? '—'}
+          value={usageData?.totals.requests_today.toLocaleString() ?? '—'}
           loading={loading}
         />
         <StatCard
           label="Cache hits this month"
-          value={data?.usage.totals.cache_hits_this_month.toLocaleString() ?? '—'}
+          value={usageData?.totals.cache_hits_this_month.toLocaleString() ?? '—'}
           loading={loading}
           hint={
-            data && data.usage.totals.requests_this_month > 0
-              ? `${Math.round((data.usage.totals.cache_hits_this_month / data.usage.totals.requests_this_month) * 100)}% hit rate`
+            usageData && usageData.totals.requests_this_month > 0
+              ? `${Math.round((usageData.totals.cache_hits_this_month / usageData.totals.requests_this_month) * 100)}% hit rate`
               : undefined
           }
         />
         <StatCard
           label="Plan"
-          value={data?.sub.subscription?.plan_name ?? 'Free'}
+          value={billingData?.subscription?.plan_name ?? 'Free'}
           loading={loading}
           hint={
-            data?.sub.subscription
-              ? `${data.sub.subscription.monthly_credits.toLocaleString()} credits / mo`
+            billingData?.subscription
+              ? `${billingData.subscription.monthly_credits.toLocaleString()} credits / mo`
               : undefined
           }
         />
@@ -90,7 +75,7 @@ export default function OverviewPage() {
                 <Skeleton key={i} className="h-10" />
               ))}
             </div>
-          ) : !data?.usage.recent.length ? (
+          ) : !usageData?.recent.length ? (
             <p className="text-sm text-muted-foreground">
               No requests yet. Try the{' '}
               <Link href="/playground" className="font-medium text-foreground hover:underline">
@@ -111,7 +96,7 @@ export default function OverviewPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.usage.recent.slice(0, 8).map((r) => (
+                  {usageData.recent.slice(0, 8).map((r) => (
                     <tr key={r.id} className="border-b last:border-0">
                       <td className="py-2 pr-4 whitespace-nowrap text-muted-foreground">
                         {formatRelative(r.created_at)}
