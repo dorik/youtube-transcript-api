@@ -9,7 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { transcripts as transcriptsApi, TranscriptResponse } from '@/lib/api';
 import { getApiErrorMessage } from '@/lib/apiError';
-import { TranscriptViewer } from '@/components/dashboard/transcript-viewer';
+import { TranscriptViewer } from '@/features/transcript-viewer';
 import { buildWatchUrl } from '@/lib/youtube-url';
 
 /**
