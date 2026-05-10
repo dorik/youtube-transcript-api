@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { auth, ApiError } from '@/lib/api';
+import { auth } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { SiteNav } from '@/components/marketing/site-nav';
 
 // Next.js requires components calling `useSearchParams()` to be wrapped in
@@ -40,8 +41,7 @@ function LoginPageImpl() {
       await auth.login({ email, password });
       router.push(next);
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Login failed';
-      toast.error(msg);
+      toast.error(getApiErrorMessage(err, 'Login failed'));
       setSubmitting(false);
     }
   }

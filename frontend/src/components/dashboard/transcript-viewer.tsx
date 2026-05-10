@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { ExternalLink, Copy, Search, Maximize2, Download, Languages } from 'lucide-react';
 import { mountPlayer, type PlayerHandle } from '@/lib/youtube-player';
 import type { TranscriptResponse, TranscriptSegment } from '@/lib/api';
+import { BLOB_URL_TTL_MS } from '@/lib/constants';
 import {
   Select,
   SelectContent,
@@ -142,8 +143,10 @@ export function TranscriptViewer({
         playerHandleRef.current = h;
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.error('YouTube player failed to mount', err);
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console -- dev-only diagnostic; the player simply doesn't render in prod
+          console.error('YouTube player failed to mount', err);
+        }
       });
 
     return () => {
@@ -222,12 +225,12 @@ export function TranscriptViewer({
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
 
       toast.success(`Exported ${filename}`);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Export failed:', err);
+    } catch {
+      // The user already sees the toast; no value in a console line that
+      // gets stripped in production anyway.
       toast.error('Could not start the download.');
     }
   }

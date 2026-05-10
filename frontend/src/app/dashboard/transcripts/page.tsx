@@ -10,12 +10,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import {
-  ApiError,
   transcripts as transcriptsApi,
   type HistoryItem,
 } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
+import { SEARCH_DEBOUNCE_MS, DEFAULT_PAGE_SIZE } from '@/lib/constants';
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 /**
  * Transcript history. One row per video the user has fetched, sorted by
@@ -32,7 +33,7 @@ export default function TranscriptsHistoryPage() {
 
   // Debounce the search box so we don't hammer the API on every keystroke.
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [search]);
 
@@ -57,7 +58,7 @@ export default function TranscriptsHistoryPage() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        toast.error(err instanceof ApiError ? err.message : 'Could not load history');
+        toast.error(getApiErrorMessage(err, 'Could not load history'));
         setItems([]);
       })
       .finally(() => {
@@ -77,7 +78,7 @@ export default function TranscriptsHistoryPage() {
         setTotal(res.total);
       })
       .catch((err: unknown) => {
-        toast.error(err instanceof ApiError ? err.message : 'Could not refresh');
+        toast.error(getApiErrorMessage(err, 'Could not refresh'));
       })
       .finally(() => setLoading(false));
   }
@@ -182,7 +183,7 @@ function HistoryRow({ item }: { item: HistoryItem }) {
               429s the thumbnail CDN — using next/image with unoptimized so
               we don't need to whitelist YT in next.config. */}
           <div className="relative shrink-0 w-32 sm:w-40 aspect-video bg-muted rounded overflow-hidden">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
+            {/* eslint-disable-next-line @next/next/no-img-element -- YouTube thumbnail CDN doesn't need next/image optimization, and using <Image> here would force adding YT to remotePatterns */}
             <img
               src={item.thumbnail_url}
               alt=""

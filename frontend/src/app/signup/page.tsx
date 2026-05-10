@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { auth, billing, ApiError } from '@/lib/api';
+import { auth, billing } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { SiteNav } from '@/components/marketing/site-nav';
 
 // Suspense wrapper required for `useSearchParams()` during static render.
@@ -42,6 +43,8 @@ function SignupPageImpl() {
       if (planParam === 'starter' || planParam === 'pro' || planParam === 'business') {
         try {
           const { url } = await billing.checkout(planParam);
+          // Full-document redirect — Stripe checkout is a third-party origin;
+          // router.push won't navigate cross-origin.
           window.location.href = url;
           return;
         } catch {
@@ -51,8 +54,7 @@ function SignupPageImpl() {
       }
       router.push('/dashboard');
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Signup failed';
-      toast.error(msg);
+      toast.error(getApiErrorMessage(err, 'Signup failed'));
       setSubmitting(false);
     }
   }

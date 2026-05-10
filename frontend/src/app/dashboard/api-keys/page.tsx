@@ -15,7 +15,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { apiKeys, ApiError, type ApiKey } from '@/lib/api';
+import { apiKeys, type ApiKey } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { rememberKey, forgetKey } from '@/lib/key-stash';
 
 export default function ApiKeysPage() {
@@ -35,7 +36,7 @@ export default function ApiKeysPage() {
       const { keys } = await apiKeys.list();
       setKeys(keys);
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not load keys');
+      toast.error(getApiErrorMessage(err, 'Could not load keys'));
     } finally {
       setLoading(false);
     }
@@ -65,7 +66,7 @@ export default function ApiKeysPage() {
       setRevealedKey(plaintext);
       await refresh();
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not create key');
+      toast.error(getApiErrorMessage(err, 'Could not create key'));
     } finally {
       setCreating(false);
     }
@@ -81,7 +82,7 @@ export default function ApiKeysPage() {
       toast.success('Key revoked');
       await refresh();
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not revoke key');
+      toast.error(getApiErrorMessage(err, 'Could not revoke key'));
     }
   }
 

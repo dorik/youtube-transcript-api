@@ -7,7 +7,14 @@
  *   backend's route definitions.
  */
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+/**
+ * Public-facing API origin. Exported so playground/docs code-snippet
+ * builders can render correct curl/JS/Python examples without reading
+ * `process.env.NEXT_PUBLIC_API_URL` directly (CLAUDE.md §4.1 forbids that).
+ */
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+
+const BASE_URL = API_BASE_URL;
 
 export class ApiError extends Error {
   constructor(

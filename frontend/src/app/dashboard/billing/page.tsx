@@ -9,12 +9,12 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import {
-  ApiError,
   billing,
   CreditState,
   Plan,
   Subscription,
 } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 
 export default function BillingPage() {
   const params = useSearchParams();
@@ -43,10 +43,10 @@ export default function BillingPage() {
           load();
         })
         .catch((err: unknown) => {
-          toast.error(err instanceof ApiError ? err.message : 'Stub activation failed');
+          toast.error(getApiErrorMessage(err, 'Stub activation failed'));
         });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount; re-running on params change is intentional via the URL-driven stub flow only
   }, []);
 
   async function load() {
@@ -59,7 +59,7 @@ export default function BillingPage() {
         credits: subResp.credits,
       });
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not load billing');
+      toast.error(getApiErrorMessage(err, 'Could not load billing'));
     } finally {
       setLoading(false);
     }
@@ -73,15 +73,17 @@ export default function BillingPage() {
     setBusyPlan(planId);
     try {
       const { url, mode } = await billing.checkout(planId);
+      // Full-document redirect both ways. Stripe checkout requires it (it's
+      // a third-party origin); the stub mode bounces back to our own
+      // /dashboard/billing?stub_success=1, where the on-mount effect picks
+      // it up. router.push wouldn't trigger that re-mount.
       if (mode === 'live') {
-        window.location.href = url; // Stripe redirect
+        window.location.href = url;
       } else {
-        // Stub mode: the URL is /dashboard/billing?stub_success=1&plan=…,
-        // which will trigger the activation effect when we land there.
         window.location.href = url;
       }
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not start checkout');
+      toast.error(getApiErrorMessage(err, 'Could not start checkout'));
       setBusyPlan(null);
     }
   }

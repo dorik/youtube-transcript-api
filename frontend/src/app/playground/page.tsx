@@ -22,13 +22,14 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
-  ApiError,
+  API_BASE_URL,
   apiKeys as apiKeysClient,
   transcripts,
   TranscriptResponse,
   TranscriptSegment,
   type ApiKey,
 } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { listStashedKeys, getStashedKey } from '@/lib/key-stash';
 import { SOURCE_LANGUAGE_OPTIONS, TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
 
@@ -156,7 +157,7 @@ export default function PlaygroundPage() {
         acc.push({
           url: v.url,
           ok: false,
-          error: err instanceof ApiError ? err.message : 'Request failed',
+          error: getApiErrorMessage(err, 'Request failed'),
         });
       }
       setResults([...acc]);
@@ -589,8 +590,8 @@ function RenderedResult({
         </p>
       </div>
       <div className="border rounded-md divide-y bg-background">
-        {data.segments.map((seg: TranscriptSegment, i: number) => (
-          <div key={i} className="flex gap-3 px-3 py-2 text-sm">
+        {data.segments.map((seg: TranscriptSegment) => (
+          <div key={seg.start} className="flex gap-3 px-3 py-2 text-sm">
             {showTimestamps && (
               <span className="font-mono text-xs text-muted-foreground tabular-nums shrink-0 mt-0.5">
                 {formatTimestamp(seg.start)}
@@ -633,8 +634,5 @@ function formatTimestamp(seconds: number): string {
 }
 
 function apiBase(): string {
-  if (typeof window !== 'undefined') {
-    return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-  }
-  return 'http://localhost:3001';
+  return API_BASE_URL;
 }

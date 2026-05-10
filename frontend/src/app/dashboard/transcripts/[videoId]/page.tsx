@@ -7,7 +7,8 @@ import { ArrowLeft } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { ApiError, transcripts as transcriptsApi, TranscriptResponse } from '@/lib/api';
+import { transcripts as transcriptsApi, TranscriptResponse } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { TranscriptViewer } from '@/components/dashboard/transcript-viewer';
 import { buildWatchUrl } from '@/lib/youtube-url';
 
@@ -48,7 +49,7 @@ export default function TranscriptViewPage() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setErrorMsg(err instanceof ApiError ? err.message : 'Could not load transcript');
+        setErrorMsg(getApiErrorMessage(err, 'Could not load transcript'));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
