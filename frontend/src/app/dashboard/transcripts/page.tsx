@@ -1,21 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import Link from 'next/link';
+import debounce from 'lodash/debounce';
 import { Plus, Search, RefreshCw } from 'lucide-react';
-import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  transcripts as transcriptsApi,
-  type HistoryItem,
-} from '@/lib/api';
-import { getApiErrorMessage } from '@/lib/apiError';
 import { SEARCH_DEBOUNCE_MS, DEFAULT_PAGE_SIZE } from '@/lib/constants';
-import { useDebouncedValue } from '@/lib/hooks/useDebouncedValue';
 import { HistoryRow } from '@/components/transcripts-history/HistoryRow';
+import { useTranscriptsQuery } from '@/features/transcripts';
 
 const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
@@ -25,61 +21,44 @@ const PAGE_SIZE = DEFAULT_PAGE_SIZE;
  * routes to the path-based viewer at /dashboard/transcripts/[videoId].
  */
 export default function TranscriptsHistoryPage() {
-  const [items, setItems] = useState<HistoryItem[] | null>(null);
-  const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [search, setSearch] = useState('');
-  const debouncedSearch = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS);
-  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const updateQuery = useMemo(
+    () => debounce((next: string) => setQuery(next.trim()), SEARCH_DEBOUNCE_MS),
+    [],
+  );
+  const handleSearchChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const next = event.target.value;
+      setSearch(next);
+      updateQuery(next);
+    },
+    [updateQuery],
+  );
+  const transcriptsQuery = useTranscriptsQuery({
+    limit: PAGE_SIZE,
+    offset,
+    q: query || undefined,
+  });
+
+  const items = transcriptsQuery.data?.items ?? [];
+  const total = transcriptsQuery.data?.total ?? 0;
+  const loading = transcriptsQuery.isLoading;
+
+  useEffect(() => () => updateQuery.cancel(), [updateQuery]);
 
   // Reset pagination whenever the active query changes.
   useEffect(() => {
     setOffset(0);
-  }, [debouncedSearch]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    transcriptsApi
-      .listMine({
-        limit: PAGE_SIZE,
-        offset,
-        q: debouncedSearch || undefined,
-      })
-      .then((res) => {
-        if (cancelled) return;
-        setItems(res.items);
-        setTotal(res.total);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        toast.error(getApiErrorMessage(err, 'Could not load history'));
-        setItems([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [offset, debouncedSearch]);
+  }, [query]);
 
   function refresh() {
-    setLoading(true);
-    transcriptsApi
-      .listMine({ limit: PAGE_SIZE, offset, q: debouncedSearch || undefined })
-      .then((res) => {
-        setItems(res.items);
-        setTotal(res.total);
-      })
-      .catch((err: unknown) => {
-        toast.error(getApiErrorMessage(err, 'Could not refresh'));
-      })
-      .finally(() => setLoading(false));
+    void transcriptsQuery.refetch();
   }
 
-  const hasResults = items !== null && items.length > 0;
-  const hasNoResults = items !== null && items.length === 0 && !loading;
+  const hasResults = items.length > 0;
+  const hasNoResults = items.length === 0 && !loading;
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -110,13 +89,13 @@ export default function TranscriptsHistoryPage() {
         <Input
           placeholder="Search by title, channel, or video id…"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={handleSearchChange}
           className="pl-9"
         />
       </div>
 
       {/* List */}
-      {loading && items === null && (
+      {loading && (
         <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24" />
@@ -125,12 +104,12 @@ export default function TranscriptsHistoryPage() {
       )}
 
       {hasNoResults && (
-        <EmptyState query={debouncedSearch} />
+        <EmptyState query={query} />
       )}
 
       {hasResults && (
         <div className="space-y-2">
-          {items!.map((item) => (
+          {items.map((item) => (
             <HistoryRow key={item.video_id} item={item} />
           ))}
         </div>
@@ -140,7 +119,7 @@ export default function TranscriptsHistoryPage() {
       {hasResults && total > PAGE_SIZE && (
         <div className="flex items-center justify-between text-sm pt-2">
           <span className="text-muted-foreground">
-            Showing {offset + 1}–{Math.min(offset + items!.length, total)} of {total}
+            Showing {offset + 1}–{Math.min(offset + items.length, total)} of {total}
           </span>
           <div className="flex items-center gap-2">
             <Button

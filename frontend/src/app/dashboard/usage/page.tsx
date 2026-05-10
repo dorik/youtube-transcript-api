@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { usage as usageApi, type UsageResponse } from '@/lib/api';
+import { useUsageQuery } from '@/features/usage';
 
 // Recharts is ~95 KB gz. Code-split so the rest of the dashboard doesn't
 // pay for it. ssr:false because it depends on the DOM (ResponsiveContainer
@@ -19,24 +18,9 @@ const UsageChart = dynamic(
 );
 
 export default function UsagePage() {
-  const [data, setData] = useState<UsageResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    usageApi
-      .get()
-      .then((d) => {
-        if (alive) {
-          setData(d);
-          setLoading(false);
-        }
-      })
-      .catch(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const usageQuery = useUsageQuery();
+  const data = usageQuery.data;
+  const loading = usageQuery.isLoading;
 
   return (
     <div className="space-y-6 max-w-5xl">
