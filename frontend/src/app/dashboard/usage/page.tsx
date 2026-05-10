@@ -1,18 +1,22 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import {
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-} from 'recharts';
+import dynamic from 'next/dynamic';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { usage as usageApi, type UsageResponse } from '@/lib/api';
+
+// Recharts is ~95 KB gz. Code-split so the rest of the dashboard doesn't
+// pay for it. ssr:false because it depends on the DOM (ResponsiveContainer
+// reads layout) and there's nothing meaningful to render on the server
+// before the client takes over.
+const UsageChart = dynamic(
+  () => import('@/components/usage/UsageChart').then((m) => m.UsageChart),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-72" />,
+  },
+);
 
 export default function UsagePage() {
   const [data, setData] = useState<UsageResponse | null>(null);
@@ -57,26 +61,7 @@ export default function UsagePage() {
             <Skeleton className="h-72" />
           ) : (
             <div className="h-72">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data?.daily ?? []}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--muted))" />
-                  <XAxis
-                    dataKey="day"
-                    fontSize={11}
-                    stroke="hsl(var(--muted-foreground))"
-                    tickFormatter={(v: string) => v.slice(5)}
-                  />
-                  <YAxis fontSize={11} stroke="hsl(var(--muted-foreground))" allowDecimals={false} />
-                  <Tooltip />
-                  <Line
-                    type="monotone"
-                    dataKey="requests"
-                    stroke="hsl(var(--foreground))"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              <UsageChart daily={data?.daily ?? []} />
             </div>
           )}
         </CardContent>
