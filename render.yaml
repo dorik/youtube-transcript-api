@@ -19,8 +19,22 @@ services:
     # Render sets NODE_ENV=production by default for `runtime: node`, which
     # makes `npm install` skip devDependencies. tsc + ts-node are dev-only,
     # so we set it explicitly during install and flip back to prod at start.
-    buildCommand: NODE_ENV=development npm install --include=dev && npm run build
-    startCommand: npm run start:prod
+    #
+    # We also drop standalone Linux binaries for `yt-dlp` and `ffmpeg` /
+    # `ffprobe` into ./bin so the Whisper fallback can spawn them at
+    # runtime. Render's Node sandbox has no apt-get and these aren't
+    # bundled with the Node image. The startCommand prepends ./bin to PATH
+    # so `execFile('yt-dlp', ...)` and `execFile('ffprobe', ...)` resolve.
+    buildCommand: |
+      NODE_ENV=development npm install --include=dev && npm run build && \
+      mkdir -p bin && \
+      curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o bin/yt-dlp && \
+      chmod +x bin/yt-dlp && \
+      curl -fsSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | \
+        tar -xJ --strip-components=1 -C bin --wildcards '*/ffmpeg' '*/ffprobe' && \
+      chmod +x bin/ffmpeg bin/ffprobe && \
+      ./bin/yt-dlp --version && ./bin/ffprobe -version | head -1
+    startCommand: PATH="$PWD/bin:$PATH" npm run start:prod
 
     healthCheckPath: /health
     autoDeploy: true
