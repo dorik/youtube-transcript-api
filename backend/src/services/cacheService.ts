@@ -21,6 +21,14 @@ function key(videoId: string, language: string): string {
   return `transcript:${videoId}:${language}`;
 }
 
+function translationKey(
+  videoId: string,
+  sourceLanguage: string,
+  targetLanguage: string,
+): string {
+  return `translation:${videoId}:${sourceLanguage}:${targetLanguage}`;
+}
+
 /**
  * Two-tier read: Redis hot cache, then Postgres cold cache.
  *
@@ -180,6 +188,151 @@ export async function setCached(
   for (const r of results) {
     if (r.status === 'rejected') {
       logger.warn({ err: r.reason, videoId }, 'Cache: write failed (non-fatal)');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Translation cache
+//
+// Translations are cached separately from native transcripts so that
+// `?language=fr` (native captions) and `?translate_to=fr` (translated from
+// some other source language) can never alias each other. Key includes the
+// source language because translating fr→en and bn→en produces different
+// output for the same video.
+// ---------------------------------------------------------------------------
+
+export interface CachedTranslation {
+  videoId: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  transcript: string;
+  segments: Segment[];
+  /** Which engine produced this row: 'openai' | 'google' | 'stub'. */
+  translator?: string;
+  cachedAt: string;
+}
+
+/**
+ * Two-tier read for a cached translation. Same pattern as `getCached`:
+ * Redis first, then Postgres, warming Redis on a cold-tier hit.
+ */
+export async function getCachedTranslation(
+  videoId: string,
+  sourceLanguage: string,
+  targetLanguage: string,
+): Promise<CachedTranslation | null> {
+  const k = translationKey(videoId, sourceLanguage, targetLanguage);
+  try {
+    const fromRedis = await redis.get(k);
+    if (fromRedis) {
+      try {
+        return JSON.parse(fromRedis) as CachedTranslation;
+      } catch (err) {
+        logger.warn(
+          { err, videoId, sourceLanguage, targetLanguage },
+          'Translation cache: corrupted Redis payload, ignoring',
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Translation cache: Redis lookup failed, trying Postgres');
+  }
+
+  type Row = {
+    video_id: string;
+    source_language: string;
+    target_language: string;
+    translator: string | null;
+    transcript_text: string;
+    segments: Segment[];
+    first_cached_at: Date;
+  };
+
+  const { rows } = await pool.query<Row>(
+    `SELECT video_id, source_language, target_language, translator,
+            transcript_text, segments, first_cached_at
+     FROM translated_transcripts
+     WHERE video_id = $1 AND source_language = $2 AND target_language = $3
+       AND expires_at > NOW()`,
+    [videoId, sourceLanguage, targetLanguage],
+  );
+
+  if (!rows.length) return null;
+
+  const row = rows[0];
+  const cached: CachedTranslation = {
+    videoId: row.video_id,
+    sourceLanguage: row.source_language,
+    targetLanguage: row.target_language,
+    translator: row.translator ?? undefined,
+    transcript: row.transcript_text,
+    segments: row.segments,
+    cachedAt: row.first_cached_at.toISOString(),
+  };
+
+  // Best-effort: bump stats + warm Redis.
+  void pool
+    .query(
+      `UPDATE translated_transcripts
+       SET last_accessed_at = NOW(), access_count = access_count + 1
+       WHERE video_id = $1 AND source_language = $2 AND target_language = $3`,
+      [videoId, sourceLanguage, targetLanguage],
+    )
+    .catch(() => {});
+  void redis.setex(k, TTL_SECONDS, JSON.stringify(cached)).catch(() => {});
+
+  return cached;
+}
+
+/**
+ * Write-through translation cache. Writes Redis + Postgres; failures are
+ * logged but do not fail the request — the user already has their result.
+ *
+ * Caller is responsible for not passing stubbed translations here. We
+ * don't want the `[src→tgt]` placeholder text getting cached for 30 days.
+ */
+export async function setCachedTranslation(
+  payload: CachedTranslation,
+): Promise<void> {
+  const k = translationKey(payload.videoId, payload.sourceLanguage, payload.targetLanguage);
+
+  const writes: Array<Promise<unknown>> = [
+    redis.setex(k, TTL_SECONDS, JSON.stringify(payload)),
+    pool.query(
+      `INSERT INTO translated_transcripts
+        (video_id, source_language, target_language, translator,
+         transcript_text, segments, character_count, segment_count, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '30 days')
+       ON CONFLICT (video_id, source_language, target_language) DO UPDATE
+         SET translator = EXCLUDED.translator,
+             transcript_text = EXCLUDED.transcript_text,
+             segments = EXCLUDED.segments,
+             character_count = EXCLUDED.character_count,
+             segment_count = EXCLUDED.segment_count,
+             last_accessed_at = NOW(),
+             access_count = translated_transcripts.access_count + 1,
+             expires_at = NOW() + INTERVAL '30 days'`,
+      [
+        payload.videoId,
+        payload.sourceLanguage,
+        payload.targetLanguage,
+        payload.translator ?? null,
+        payload.transcript,
+        JSON.stringify(payload.segments),
+        payload.transcript.length,
+        payload.segments.length,
+      ],
+    ),
+  ];
+
+  const results = await Promise.allSettled(writes);
+  for (const r of results) {
+    if (r.status === 'rejected') {
+      logger.warn(
+        { err: r.reason, videoId: payload.videoId },
+        'Translation cache: write failed (non-fatal)',
+      );
     }
   }
 }
