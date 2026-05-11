@@ -35,11 +35,21 @@ export function createApp(): Application {
 
   // FRONTEND_URL accepts a comma-separated list so the same backend can
   // serve a Vercel preview deploy AND the production domain. Origins not
-  // in the list are rejected (no `*` because we use credentials).
-  const allowedOrigins = config.FRONTEND_URL
+  // in the list are rejected.
+  //
+  // The special value `*` (alone or as one of the comma-separated entries)
+  // opens the allowlist to any origin. The CORS spec forbids the literal
+  // `Access-Control-Allow-Origin: *` header alongside credentials, so we
+  // reflect the request's Origin instead — same permissive effect,
+  // browser-compatible with our cookie auth. Use this as a temporary
+  // unblocker while frontend domains are still moving; flip back to an
+  // explicit list once they're stable.
+  const frontendEntries = config.FRONTEND_URL
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  const allowAllOrigins = frontendEntries.includes('*');
+  const allowedOrigins = frontendEntries.filter((o) => o !== '*');
   app.use(
     cors({
       credentials: true,
@@ -47,6 +57,7 @@ export function createApp(): Application {
         // Same-origin requests (server-to-server, curl, health checks) have
         // no Origin header — allow them so /health and direct curl work.
         if (!origin) return cb(null, true);
+        if (allowAllOrigins) return cb(null, true);
         if (allowedOrigins.includes(origin)) return cb(null, true);
         return cb(new Error(`CORS: origin ${origin} not allowed`));
       },
