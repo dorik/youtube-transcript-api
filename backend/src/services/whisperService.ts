@@ -18,19 +18,38 @@ export interface WhisperResult {
   source: 'whisper';
 }
 
+export interface TranscribeWithWhisperOptions {
+  /**
+   * Whether the caller's plan is allowed to use the real OpenAI path.
+   *
+   * Free-plan users are forced onto the stub regardless of env. Paid
+   * users follow the env flag (real in prod, stub in dev). This protects
+   * us from burning OpenAI quota on accounts that aren't paying.
+   *
+   * Default `false` — callers must opt in explicitly, so a forgotten
+   * plumb-through fails closed rather than open.
+   */
+  allowRealWhisper?: boolean;
+}
+
 /**
  * Transcribe a YouTube video by downloading audio with yt-dlp and shipping
  * the file to OpenAI's Whisper.
  *
- * When `STUB_WHISPER=true`, we return a single canned segment instead. This
- * lets the rest of the pipeline (credits, caching, formatters) be fully
- * exercised end-to-end without paying for / configuring OpenAI in dev.
+ * Real-vs-stub is decided by two independent gates:
+ *  - `STUB_WHISPER=true` env flag — global kill-switch, used in dev.
+ *  - `allowRealWhisper` per-call — gates paid features by plan.
+ *
+ * Stub returns canned segments (30s of placeholder text) so the rest of
+ * the pipeline (credits, caching, formatters) is still exercised.
  */
 export async function transcribeWithWhisper(
   videoId: string,
   language?: string,
+  options: TranscribeWithWhisperOptions = {},
 ): Promise<WhisperResult> {
-  if (config.STUB_WHISPER) {
+  const allowReal = options.allowRealWhisper ?? false;
+  if (config.STUB_WHISPER || !allowReal) {
     return stubResult(videoId, language);
   }
   return realWhisper(videoId, language);
@@ -38,19 +57,22 @@ export async function transcribeWithWhisper(
 
 function stubResult(videoId: string, language?: string): WhisperResult {
   // 30 seconds of canned content split into two segments. Enough for
-  // formatters, SRT/VTT, and credit math (1 minute → 1 credit) to look real.
+  // formatters, SRT/VTT, and credit math (1 minute → 1 credit) to look
+  // real. The text is intentionally user-facing rather than dev-facing —
+  // free-tier users hit this branch in production and shouldn't see an
+  // internal-sounding "STUB_WHISPER=false" instruction.
   return {
     videoId,
     segments: [
       {
         start: 0,
         duration: 15,
-        text: `[Stubbed Whisper transcription for ${videoId}]`,
+        text: 'AI transcription (Whisper) is only available on paid plans.',
       },
       {
         start: 15,
         duration: 15,
-        text: 'Set STUB_WHISPER=false and provide OPENAI_API_KEY for the real thing.',
+        text: 'Upgrade your plan to transcribe videos that don’t have native captions.',
       },
     ],
     language: language ?? 'en',

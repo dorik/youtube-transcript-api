@@ -20,6 +20,23 @@ export const PLANS: Record<PlanId, PlanConfig> = {
   business: { id: 'business', name: 'Business', price: 79, monthlyCredits: 40_000, stripePriceEnvKey: 'STRIPE_PRICE_ID_BUSINESS' },
 };
 
+/**
+ * True for any plan that's paid (i.e. NOT 'free').
+ *
+ * Used to gate features that cost real money on our side — most notably
+ * the OpenAI Whisper transcription path. Free users get the canned stub
+ * response instead, so we don't burn OpenAI quota on accounts that
+ * haven't paid anything.
+ *
+ * `undefined` / `null` (no subscription row at all) is treated as free —
+ * a fresh user gets a row on signup, but we shouldn't blow up if the
+ * subscription record is missing for any reason.
+ */
+export function isPaidPlan(planId: PlanId | null | undefined): boolean {
+  if (!planId) return false;
+  return planId !== 'free';
+}
+
 let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
   if (config.STUB_STRIPE) {

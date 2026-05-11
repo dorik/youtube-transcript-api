@@ -4,6 +4,7 @@ import { transcribeWithWhisper, whisperCreditCost } from './whisperService';
 import { getCached, setCached, CachedTranscript } from './cacheService';
 import { deductCredits, getCreditState } from './creditService';
 import { translateSegments } from './translationService';
+import { getUserSubscription, isPaidPlan } from './stripeService';
 import {
   OutputFormat,
   Segment,
@@ -134,10 +135,17 @@ export async function getTranscript(
       throw new PaymentRequiredError(1, stateBefore.balance);
     }
 
+    // Real OpenAI Whisper is a paid-only feature. Free users get the stub
+    // response instead so we don't burn OpenAI quota on accounts that
+    // haven't paid. Look up the plan once here and pipe the boolean down.
+    const subscription = await getUserSubscription(input.userId);
+    const allowRealWhisper = isPaidPlan(subscription?.plan_id);
+
     const fetched = await fetchTranscript(
       videoId,
       requestedLanguage,
       input.nativeOnly ?? false,
+      allowRealWhisper,
     );
     const metadata = await fetchYouTubeMetadata(videoId);
 
@@ -239,7 +247,13 @@ export async function getTranscript(
   });
 }
 
-async function fetchTranscript(videoId: string, language: string, nativeOnly: boolean) {
+async function fetchTranscript(
+  videoId: string,
+  language: string,
+  nativeOnly: boolean,
+  allowRealWhisper: boolean,
+) {
+  const whisperOpts = { allowRealWhisper };
   try {
     return await fetchYouTubeCaptions(videoId, language);
   } catch (err) {
@@ -248,8 +262,8 @@ async function fetchTranscript(videoId: string, language: string, nativeOnly: bo
         // Caller asked us not to spend Whisper credits; surface the failure.
         throw err;
       }
-      logger.info({ videoId }, 'No native captions; falling back to Whisper');
-      return await transcribeWithWhisper(videoId, language);
+      logger.info({ videoId, allowRealWhisper }, 'No native captions; falling back to Whisper');
+      return await transcribeWithWhisper(videoId, language, whisperOpts);
     }
     // YouTube is rate-limiting our IP (very common on datacenter hosts like
     // Render where every tenant shares the same egress range). Native
@@ -261,8 +275,8 @@ async function fetchTranscript(videoId: string, language: string, nativeOnly: bo
         // Caller explicitly opted out of Whisper, so we have to surface it.
         throw err;
       }
-      logger.warn({ videoId }, 'YouTube throttled our IP; falling back to Whisper');
-      return await transcribeWithWhisper(videoId, language);
+      logger.warn({ videoId, allowRealWhisper }, 'YouTube throttled our IP; falling back to Whisper');
+      return await transcribeWithWhisper(videoId, language, whisperOpts);
     }
     if (err instanceof ApiError) throw err;
     // Unknown error inside the YouTube layer: treat as Whisper-eligible to
@@ -271,8 +285,8 @@ async function fetchTranscript(videoId: string, language: string, nativeOnly: bo
       logger.warn({ err, videoId }, 'YouTube fetch failed and native_only=true; not falling back');
       throw err;
     }
-    logger.warn({ err, videoId }, 'YouTube fetch failed unexpectedly; trying Whisper');
-    return await transcribeWithWhisper(videoId, language);
+    logger.warn({ err, videoId, allowRealWhisper }, 'YouTube fetch failed unexpectedly; trying Whisper');
+    return await transcribeWithWhisper(videoId, language, whisperOpts);
   }
 }
 
