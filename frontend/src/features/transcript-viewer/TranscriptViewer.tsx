@@ -14,8 +14,8 @@ import {
   SelectTrigger,
 } from '@/components/ui/select';
 import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
-import { SubtitleOverlay } from '@/components/dashboard/subtitle-overlay';
-import { SubtitleSettingsPopover } from '@/components/dashboard/subtitle-settings-popover';
+import { SubtitleOverlay } from './SubtitleOverlay';
+import { SubtitleSettingsPopover } from './SubtitleSettingsPopover';
 import {
   loadSubtitleSettings,
   saveSubtitleSettings,
@@ -33,11 +33,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { formatTimecode } from '@/lib/format';
 import type { TranscriptViewerProps } from './types';
 import {
   findActiveSegment,
   formatDuration,
-  formatTimestamp,
   segmentsToSubtitles,
   wordCount,
 } from './utils';
@@ -448,7 +448,7 @@ export function TranscriptViewer({
                       }}
                       className="font-mono text-xs text-muted-foreground hover:text-foreground tabular-nums shrink-0 mt-0.5"
                     >
-                      {formatTimestamp(seg.start)}
+                      {formatTimecode(seg.start)}
                     </button>
                     <p className="text-sm leading-relaxed">{seg.text}</p>
                   </li>
