@@ -43,6 +43,12 @@ export interface SearchableSelectProps {
   id?: string;
   /** Accessible name when no visible label is paired. */
   'aria-label'?: string;
+  /**
+   * Replaces the default label text inside the trigger button. The chevron
+   * is still rendered after whatever this returns. Useful for compact
+   * triggers (icon + code) where the full option label would be too long.
+   */
+  renderTriggerLabel?: (selected: SearchableSelectOption | null) => React.ReactNode;
 }
 
 export function SearchableSelect({
@@ -57,6 +63,7 @@ export function SearchableSelect({
   contentClassName,
   id,
   'aria-label': ariaLabel,
+  renderTriggerLabel,
 }: SearchableSelectProps) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
@@ -138,9 +145,13 @@ export function SearchableSelect({
             className,
           )}
         >
-          <span className={cn('truncate text-left', !selected && 'text-muted-foreground')}>
-            {selected?.label ?? placeholder}
-          </span>
+          {renderTriggerLabel ? (
+            renderTriggerLabel(selected)
+          ) : (
+            <span className={cn('truncate text-left', !selected && 'text-muted-foreground')}>
+              {selected?.label ?? placeholder}
+            </span>
+          )}
           <ChevronsUpDown className="h-4 w-4 opacity-50 shrink-0 ml-2" />
         </button>
       </PopoverPrimitive.Trigger>
