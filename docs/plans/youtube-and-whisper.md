@@ -18,20 +18,22 @@ There is one entry point used by the transcript orchestrator. It takes a video i
 
 The two paths under the interface:
 
-- **Native captions** via the `youtube-transcript` npm library. Tries the requested language; if unavailable, falls back to whatever YouTube returns by default. Returns segments shaped `{ start, dur, text }` and the actual language code.
+- **Native captions** via `yt-dlp` (subprocess). Dumps the watch-page metadata, picks the best caption track for the requested language (manual preferred over auto-generated; auto-translated `en-fr`-style variants are skipped), then fetches that track directly as `json3`. Tries the requested language; if unavailable, falls back to any genuine track. Returns segments shaped `{ start, dur, text }` and the actual language code.
 - **Whisper transcription** via OpenAI's audio API. Used only when native captions don't exist. Has a stub mode for dev.
 
 A clear distinction between failure modes matters here: if YouTube says "this video has no captions in any language" we fall back to Whisper. If YouTube says "I don't know who you are" or "rate limited" or "video is private," that's NOT a missing-captions case — we propagate the error, no Whisper fallback. The transcript endpoint then surfaces an appropriate error code (502, 429, 404 `VIDEO_NOT_FOUND`, etc.).
 
 ### Native fetcher logic
 
-The native path uses the `youtube-transcript` library, which scrapes YouTube's caption endpoints. It accepts a video id and an optional language code.
+The native path shells out to `yt-dlp` with `--dump-single-json --skip-download`, which gives us the full caption catalog (manual + auto-generated tracks, keyed by language) plus video duration. We pick the best matching track and then fetch the `json3` body directly via axios — no subtitle file is written to disk. The yt-dlp binary is provisioned at deploy time (see `render.yaml`'s build command), so calling code just runs `execFile('yt-dlp', ...)`.
 
-**Language handling.** When the orchestrator passes `language=auto`, the fetcher asks for the default — whatever YouTube hands back, that's what we cache and return. When the orchestrator passes a specific code (say `es`), the fetcher asks for that. If YouTube doesn't have Spanish captions for the video, the library throws; we catch and re-try with no language specified (the default). The `language` field in the returned result is the actual content language, not the requested one. The orchestrator decides whether to translate (if the user asked for `translate_to`).
+**Language handling.** When the orchestrator passes `language=auto`, the picker takes any genuine caption track in priority order: any manual track, then any auto-generated track. When the orchestrator passes a specific code (say `es`), the picker tries an exact match, then a region-stripped match (e.g. `es-ES` matches `es`), preferring manual over auto. If neither is available, it falls back to any genuine track in any language — the same "wrong language beats no transcript" behaviour the previous library had. The `language` field in the returned result is the actual content language, not the requested one. Auto-translated variants like `en-fr` are deliberately skipped because they're machine translations layered on machine recognition. The orchestrator decides whether to translate (if the user asked for `translate_to`).
 
-**Segment normalization.** The library returns objects with `text`, `duration`, and `offset` (in milliseconds in some versions, seconds in others). We normalize to `{ start, dur, text }` with both times in floating-point seconds. Text is HTML-decoded (the library sometimes returns `&amp;`, `&#39;`, etc.) and trimmed; empty segments are dropped.
+**Segment normalization.** YouTube's `json3` events look like `{ tStartMs, dDurationMs, segs: [{ utf8 }] }`. We normalize to `{ start, dur, text }` with both times in floating-point seconds, concatenating `segs[].utf8` and collapsing runs of whitespace. Empty events (timing markers with no text) are dropped. No HTML decoding needed — `json3` is already plain UTF-8.
 
-**Error classification.** The library throws a few different errors. `NoTranscriptError` (or whatever the equivalent is in the version we pin) is the only one that triggers the Whisper fallback. Everything else — network failures, 429s, parse errors — propagates as an upstream error. The orchestrator turns these into 502 / 503 with code `UPSTREAM_ERROR`.
+**Error classification.** yt-dlp's stderr is pattern-matched to translate failures into our domain errors: `Video unavailable` / `Private video` / `removed by the uploader` → `VideoNotFoundError`; `HTTP Error 429` / `Sign in to confirm you're not a bot` → `RateLimitError(60)`; everything else → `NoTranscriptError` (which is what triggers the Whisper fallback). The orchestrator turns the rest into 502 / 503 with code `UPSTREAM_ERROR`.
+
+**Concurrency cap.** yt-dlp uses ~50–100 MB RAM per call; on the Render free instance (512 MB) an unbounded burst would OOM-kill the process. A tiny in-process FIFO semaphore caps concurrent yt-dlp subprocesses at 3.
 
 ### Whisper fallback
 

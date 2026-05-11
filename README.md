@@ -108,7 +108,7 @@ backend/
 │   ├── middleware/               # apiKeyAuth, sessionAuth, rateLimit, errorHandler
 │   ├── services/                 # business logic
 │   │   ├── transcriptService.ts  # orchestrator (cache → fetch → Whisper → credits)
-│   │   ├── youtubeService.ts     # native captions via youtube-transcript
+│   │   ├── youtubeService.ts     # native captions via yt-dlp
 │   │   ├── whisperService.ts     # Whisper (real + stub)
 │   │   ├── cacheService.ts       # Redis + Postgres two-tier
 │   │   ├── creditService.ts      # transactional credit deductions
