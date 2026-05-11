@@ -58,11 +58,6 @@ export const HistoryRow = memo(function HistoryRow({ item }: { item: HistoryItem
               {item.last_cache_hit ? (
                 <Badge variant="secondary" className="text-[10px]">cached</Badge>
               ) : null}
-              {item.fetch_count > 1 && (
-                <Badge variant="outline" className="text-[10px]">
-                  {item.fetch_count}× fetched
-                </Badge>
-              )}
               {item.last_credits_used != null && item.last_credits_used > 0 && (
                 <Badge variant="outline" className="text-[10px]">
                   {item.last_credits_used} credits
