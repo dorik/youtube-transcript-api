@@ -1,7 +1,13 @@
 import { extractVideoId, buildWatchUrl } from '../utils/youtubeUrl';
 import { fetchYouTubeCaptions, fetchYouTubeMetadata } from './youtubeService';
 import { transcribeWithWhisper, whisperCreditCost } from './whisperService';
-import { getCached, setCached, CachedTranscript } from './cacheService';
+import {
+  getCached,
+  setCached,
+  getCachedTranslation,
+  setCachedTranslation,
+  CachedTranscript,
+} from './cacheService';
 import { deductCredits, getCreditState } from './creditService';
 import { translateSegments } from './translationService';
 import { getUserSubscription, isPaidPlan } from './stripeService';
@@ -21,6 +27,7 @@ import {
   ValidationError,
 } from '../utils/errors';
 import { logger } from '../config/logger';
+import { config } from '../config/env';
 
 export interface TranscriptResponse {
   video_id: string;
@@ -88,8 +95,10 @@ export interface GetTranscriptInput {
  *  2. Cache hit on the original → reuse it; otherwise fetch native captions
  *     (with Whisper fallback) and cache.
  *  3. If `translate_to` is set and differs from the original language,
- *     translate the segments and charge +1 credit. Translations are NOT
- *     cached for MVP — each translate call hits the LLM (or stub).
+ *     check the translation cache. Hit → reuse translated segments, no
+ *     credit deducted. Miss → translate the segments, charge +1 credit,
+ *     and (if the translator was real, not the stub) write the result
+ *     back to the cache so the next caller skips both.
  *  4. Format the response (JSON / text / SRT / VTT / text-timestamps).
  */
 export async function getTranscript(
@@ -191,34 +200,78 @@ export async function getTranscript(
   let displayLanguage = original.language;
   let translationStubbed: boolean | undefined;
   let creditsForTranslation = 0;
+  let translationCacheHit = false;
 
   if (shouldTranslate) {
-    // Charge +1 credit for translation. Done in its own transactional
-    // deduction so the user sees an accurate breakdown later.
-    const stateBeforeTrans = await getCreditState(input.userId);
-    if (stateBeforeTrans.balance < 1) {
-      throw new PaymentRequiredError(1, stateBeforeTrans.balance);
-    }
-
-    const translated = await translateSegments(
-      original.segments,
+    // Cache check first. Hit → no upstream call, no credit deduction — the
+    // user already paid for this translation the first time around and the
+    // text doesn't change. Miss falls through to the upstream + charge
+    // path below.
+    const cachedTranslation = await getCachedTranslation(
+      videoId,
       original.language,
       translateTo!,
     );
-    displaySegments = translated.segments;
-    displayTranscript = translated.fullText;
-    displayLanguage = translateTo!;
-    translationStubbed = !translated.real;
+    if (cachedTranslation) {
+      displaySegments = cachedTranslation.segments;
+      displayTranscript = cachedTranslation.transcript;
+      displayLanguage = translateTo!;
+      // Cached output is necessarily a real (non-stubbed) translation:
+      // stubs are deliberately not written to the cache.
+      translationStubbed = false;
+      translationCacheHit = true;
+    } else {
+      // Pre-flight credit check, then translate, then charge +1 credit in
+      // its own transactional deduction so the user sees an accurate
+      // breakdown later.
+      const stateBeforeTrans = await getCreditState(input.userId);
+      if (stateBeforeTrans.balance < 1) {
+        throw new PaymentRequiredError(1, stateBeforeTrans.balance);
+      }
 
-    await deductCredits({
-      userId: input.userId,
-      amount: 1,
-      reason: 'transcript_translation',
-      videoId,
-      source: original.source,
-      metadata: { from: original.language, to: translateTo },
-    });
-    creditsForTranslation = 1;
+      const translated = await translateSegments(
+        original.segments,
+        original.language,
+        translateTo!,
+      );
+      displaySegments = translated.segments;
+      displayTranscript = translated.fullText;
+      displayLanguage = translateTo!;
+      translationStubbed = !translated.real;
+
+      await deductCredits({
+        userId: input.userId,
+        amount: 1,
+        reason: 'transcript_translation',
+        videoId,
+        source: original.source,
+        metadata: { from: original.language, to: translateTo },
+      });
+      creditsForTranslation = 1;
+
+      // Only cache real translations. Stubbed output contains the
+      // `[src→tgt]` placeholder prefix and is intentionally low-quality;
+      // caching it would poison the table for 30 days even after
+      // STUB_TRANSLATION is turned off.
+      if (translated.real) {
+        // Fire-and-forget: the user already has their translation; we
+        // don't want a slow cache write to block the response.
+        void setCachedTranslation({
+          videoId,
+          sourceLanguage: original.language,
+          targetLanguage: translateTo!,
+          transcript: translated.fullText,
+          segments: translated.segments,
+          translator: config.OPENAI_API_KEY ? 'openai' : 'google',
+          cachedAt: new Date().toISOString(),
+        }).catch((err) => {
+          logger.warn(
+            { err, videoId, from: original.language, to: translateTo },
+            'Failed to cache translation (non-fatal)',
+          );
+        });
+      }
+    }
   }
 
   // 3. Final balance + format
@@ -232,7 +285,10 @@ export async function getTranscript(
       segments: displaySegments,
     },
     format: input.format,
-    cached: originalCacheHit && !shouldTranslate,
+    // True when this whole request was served without an upstream call:
+    // - original came from cache, and
+    // - either no translation was needed, or the translation came from cache too.
+    cached: originalCacheHit && (!shouldTranslate || translationCacheHit),
     creditsUsed: totalCreditsUsed,
     creditsRemaining: finalState.balance,
     displayLanguage,
