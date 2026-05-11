@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,74 +15,61 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { apiKeys, ApiError, type ApiKey } from '@/lib/api';
 import { rememberKey, forgetKey } from '@/lib/key-stash';
+import {
+  useApiKeysQuery,
+  useCreateApiKeyMutation,
+  useRevokeApiKeyMutation,
+} from '@/features/api-keys';
 
 export default function ApiKeysPage() {
-  const [keys, setKeys] = useState<ApiKey[] | null>(null);
-  const [loading, setLoading] = useState(true);
-
   // Create dialog state
   const [createOpen, setCreateOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
-  const [creating, setCreating] = useState(false);
 
   // Reveal dialog state (shown once after creation)
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
 
-  async function refresh() {
-    try {
-      const { keys } = await apiKeys.list();
-      setKeys(keys);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not load keys');
-    } finally {
-      setLoading(false);
-    }
+  const apiKeysQuery = useApiKeysQuery();
+  const createApiKeyMutation = useCreateApiKeyMutation();
+  const revokeApiKeyMutation = useRevokeApiKeyMutation();
+
+  const keys = apiKeysQuery.data?.keys ?? [];
+
+  function onCreate() {
+    if (createApiKeyMutation.isPending) return;
+
+    createApiKeyMutation.mutate(
+      { name: newKeyName.trim() || undefined },
+      {
+        onSuccess: ({ key, plaintext }) => {
+          // Stash plaintext in localStorage so the playground / viewer can offer
+          // it as a dropdown option without making the user paste each time.
+          rememberKey({
+            id: key.id,
+            prefix: key.prefix ?? null,
+            name: key.name,
+            plaintext,
+          });
+          setCreateOpen(false);
+          setNewKeyName('');
+          setRevealedKey(plaintext);
+        },
+      },
+    );
   }
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  async function onCreate() {
-    if (creating) return;
-    setCreating(true);
-    try {
-      const { key, plaintext } = await apiKeys.create({
-        name: newKeyName.trim() || undefined,
-      });
-      // Stash plaintext in localStorage so the playground / viewer can offer
-      // it as a dropdown option without making the user paste each time.
-      rememberKey({
-        id: key.id,
-        prefix: key.prefix ?? null,
-        name: key.name,
-        plaintext,
-      });
-      setCreateOpen(false);
-      setNewKeyName('');
-      setRevealedKey(plaintext);
-      await refresh();
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not create key');
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function onRevoke(keyId: string) {
+  function onRevoke(keyId: string) {
     if (!confirm('Revoke this key? Any apps using it will start getting 401s immediately.')) {
       return;
     }
-    try {
-      await apiKeys.revoke(keyId);
-      forgetKey(keyId);
-      toast.success('Key revoked');
-      await refresh();
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not revoke key');
-    }
+
+    revokeApiKeyMutation.mutate(keyId, {
+      onSuccess: () => {
+        forgetKey(keyId);
+        toast.success('Key revoked');
+      },
+    });
   }
 
   async function copy(text: string) {
@@ -107,13 +94,13 @@ export default function ApiKeysPage() {
           <CardTitle>Your keys</CardTitle>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {apiKeysQuery.isLoading ? (
             <div className="space-y-2">
               {Array.from({ length: 2 }).map((_, i) => (
                 <Skeleton key={i} className="h-12" />
               ))}
             </div>
-          ) : !keys?.length ? (
+          ) : !keys.length ? (
             <p className="text-sm text-muted-foreground">
               You don&apos;t have any keys yet. Create one to start using the API.
             </p>
@@ -161,6 +148,7 @@ export default function ApiKeysPage() {
                             size="sm"
                             className="text-red-600 hover:text-red-700 hover:bg-red-50"
                             onClick={() => onRevoke(k.id)}
+                            disabled={revokeApiKeyMutation.isPending}
                           >
                             Revoke
                           </Button>
@@ -199,8 +187,8 @@ export default function ApiKeysPage() {
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={onCreate} disabled={creating}>
-              {creating ? 'Creating…' : 'Create'}
+            <Button onClick={onCreate} disabled={createApiKeyMutation.isPending}>
+              {createApiKeyMutation.isPending ? 'Creating…' : 'Create'}
             </Button>
           </DialogFooter>
         </DialogContent>

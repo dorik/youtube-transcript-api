@@ -113,6 +113,24 @@ export default function DocsPage() {
           </ul>
         </Section>
 
+        <Section id="browse" title="Browse endpoints">
+          <p>
+            The same bearer key also unlocks lightweight YouTube discovery endpoints.
+            Browse calls cost one credit, except <code>/v1/channel/latest</code>, which is free
+            for monitoring workflows.
+          </p>
+          <ParamTable
+            rows={[
+              { name: 'GET /v1/search', type: 'q, type, limit', required: true, description: 'Search YouTube videos, channels, or playlists.' },
+              { name: 'GET /v1/channel/search', type: 'channel, q, limit', required: true, description: 'Search videos inside a channel URL, ID, or @handle.' },
+              { name: 'GET /v1/channel/videos', type: 'channel, limit', required: true, description: 'List videos from a channel.' },
+              { name: 'GET /v1/channel/latest', type: 'channel, limit', required: true, description: 'List latest channel uploads. No credit charged.' },
+              { name: 'GET /v1/playlist/videos', type: 'playlist, limit', required: true, description: 'Expand a YouTube playlist into video records.' },
+              { name: 'GET /v1/video/metadata', type: 'url or video_id', required: true, description: 'Return title, channel, thumbnail, and canonical URL.' },
+            ]}
+          />
+        </Section>
+
         <Section id="formats" title="Output formats">
           <p>
             Pass <code>format=&lt;value&gt;</code> to control the response body. JSON is the

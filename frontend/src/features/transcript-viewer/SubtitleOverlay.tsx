@@ -7,6 +7,7 @@ import {
   resolveTextColor,
   type SubtitleSettings,
 } from '@/lib/subtitle-settings';
+import { findActiveSegment } from './utils';
 
 interface Props {
   segments: TranscriptSegment[];
@@ -145,6 +146,10 @@ function SegmentLine({
         ...containerStyle,
       }}
     >
+      {/* Index keys are intentional: words within a single subtitle line
+          can repeat ("hello hello") so the word string can't be unique,
+          and the array is positionally stable across renders of the same
+          line. CLAUDE.md §14.3 exception. */}
       {words.map((word, i) => {
         const isActive = i === activeWordIdx;
         return (
@@ -170,21 +175,3 @@ function SegmentLine({
   );
 }
 
-function findActiveSegment(segments: TranscriptSegment[], time: number): number {
-  // Same binary search the segment list uses; duplicated here because this
-  // component is independent of the right-pane list.
-  let lo = 0;
-  let hi = segments.length - 1;
-  let last = -1;
-  while (lo <= hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const s = segments[mid];
-    if (s.start <= time) {
-      last = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return last;
-}

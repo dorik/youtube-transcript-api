@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { auth, billing, ApiError } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { SiteNav } from '@/components/marketing/site-nav';
+import { useSignupMutation } from '@/features/auth';
+import { useCheckoutMutation } from '@/features/billing';
 
 // Suspense wrapper required for `useSearchParams()` during static render.
 // See login/page.tsx for the same pattern.
@@ -28,34 +30,42 @@ function SignupPageImpl() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const signupMutation = useSignupMutation();
+  const checkoutMutation = useCheckoutMutation();
 
-  async function onSubmit(e: React.FormEvent) {
+  function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submitting) return;
-    setSubmitting(true);
-    try {
-      await auth.signup({ email, password });
-      toast.success('Welcome! Account created.');
+    if (signupMutation.isPending || checkoutMutation.isPending) return;
 
-      // If they came from a pricing CTA, kick them to checkout
-      if (planParam === 'starter' || planParam === 'pro' || planParam === 'business') {
-        try {
-          const { url } = await billing.checkout(planParam);
-          window.location.href = url;
-          return;
-        } catch {
-          toast.error('Could not start checkout — taking you to the dashboard.');
-          // fall through to dashboard
-        }
-      }
-      router.push('/dashboard');
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Signup failed';
-      toast.error(msg);
-      setSubmitting(false);
-    }
+    signupMutation.mutate(
+      { email, password },
+      {
+        onSuccess: () => {
+          toast.success('Welcome! Account created.');
+
+          // If they came from a pricing CTA, kick them to checkout
+          if (planParam === 'starter' || planParam === 'pro' || planParam === 'business') {
+            checkoutMutation.mutate(planParam, {
+              onSuccess: ({ url }) => {
+                // Full-document redirect — Stripe checkout is a third-party origin;
+                // router.push won't navigate cross-origin.
+                window.location.href = url;
+              },
+              onError: () => {
+                toast.error('Could not start checkout — taking you to the dashboard.');
+                router.push('/dashboard');
+              },
+            });
+            return;
+          }
+          router.push('/dashboard');
+        },
+        onError: (err) => toast.error(getApiErrorMessage(err, 'Signup failed')),
+      },
+    );
   }
+
+  const submitting = signupMutation.isPending || checkoutMutation.isPending;
 
   return (
     <>

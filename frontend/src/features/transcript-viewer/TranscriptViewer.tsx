@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { toast } from 'sonner';
 import { ExternalLink, Copy, Search, Maximize2, Download, Languages } from 'lucide-react';
 import { mountPlayer, type PlayerHandle } from '@/lib/youtube-player';
-import type { TranscriptResponse, TranscriptSegment } from '@/lib/api';
+import type { TranscriptSegment } from '@/lib/api';
+import { BLOB_URL_TTL_MS } from '@/lib/constants';
 import {
   Select,
   SelectContent,
@@ -13,8 +14,8 @@ import {
   SelectTrigger,
 } from '@/components/ui/select';
 import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
-import { SubtitleOverlay } from '@/components/dashboard/subtitle-overlay';
-import { SubtitleSettingsPopover } from '@/components/dashboard/subtitle-settings-popover';
+import { SubtitleOverlay } from './SubtitleOverlay';
+import { SubtitleSettingsPopover } from './SubtitleSettingsPopover';
 import {
   loadSubtitleSettings,
   saveSubtitleSettings,
@@ -32,20 +33,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
-
-interface Props {
-  data: TranscriptResponse;
-  /** Called when the user picks a different language (refetch). */
-  onLanguageChange?: (lang: string) => void;
-  /**
-   * Called when the user picks a translation target from inside the viewer.
-   * `target` is an ISO 639-1 code or `null` to remove translation.
-   * The page should re-fetch with the new param and pass fresh `data` back.
-   */
-  onTranslateTargetChange?: (target: string | null) => void;
-  /** True while the page is re-fetching (e.g. after a translate change). */
-  isRefetching?: boolean;
-}
+import { formatTimecode } from '@/lib/format';
+import type { TranscriptViewerProps } from './types';
+import {
+  findActiveSegment,
+  formatDuration,
+  segmentsToSubtitles,
+  wordCount,
+} from './utils';
 
 /**
  * Two-pane transcript viewer: YouTube IFrame on the left, segmented
@@ -56,7 +51,7 @@ export function TranscriptViewer({
   data,
   onTranslateTargetChange,
   isRefetching,
-}: Props) {
+}: TranscriptViewerProps) {
   const [theatre, setTheatre] = useState(false);
   const [autoscroll, setAutoscroll] = useState(true);
   const [search, setSearch] = useState('');
@@ -142,8 +137,10 @@ export function TranscriptViewer({
         playerHandleRef.current = h;
       })
       .catch((err) => {
-        // eslint-disable-next-line no-console
-        console.error('YouTube player failed to mount', err);
+        if (process.env.NODE_ENV !== 'production') {
+          // eslint-disable-next-line no-console -- dev-only diagnostic; the player simply doesn't render in prod
+          console.error('YouTube player failed to mount', err);
+        }
       });
 
     return () => {
@@ -222,12 +219,12 @@ export function TranscriptViewer({
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_TTL_MS);
 
       toast.success(`Exported ${filename}`);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('Export failed:', err);
+    } catch {
+      // The user already sees the toast; no value in a console line that
+      // gets stripped in production anyway.
       toast.error('Could not start the download.');
     }
   }
@@ -451,7 +448,7 @@ export function TranscriptViewer({
                       }}
                       className="font-mono text-xs text-muted-foreground hover:text-foreground tabular-nums shrink-0 mt-0.5"
                     >
-                      {formatTimestamp(seg.start)}
+                      {formatTimecode(seg.start)}
                     </button>
                     <p className="text-sm leading-relaxed">{seg.text}</p>
                   </li>
@@ -476,70 +473,4 @@ export function TranscriptViewer({
       </div>
     </div>
   );
-}
-
-function findActiveSegment(segments: TranscriptSegment[], time: number): number {
-  // Binary search for the segment whose [start, start+duration) contains time
-  let lo = 0;
-  let hi = segments.length - 1;
-  let last = -1;
-  while (lo <= hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const s = segments[mid];
-    if (s.start <= time) {
-      last = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return last;
-}
-
-function formatTimestamp(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  if (h > 0) {
-    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  }
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-function formatDuration(seconds: number): string {
-  if (!seconds) return '—';
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds % 60);
-  return `${m}m ${s}s`;
-}
-
-function wordCount(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length;
-}
-
-function segmentsToSubtitles(segments: TranscriptSegment[], format: 'srt' | 'vtt'): string {
-  const cueDivider = format === 'srt' ? ',' : '.';
-  const fmt = (sec: number) => {
-    const total = Math.max(0, Math.round(sec * 1000));
-    const ms = total % 1000;
-    const totalSec = Math.floor(total / 1000);
-    const s = totalSec % 60;
-    const m = Math.floor(totalSec / 60) % 60;
-    const h = Math.floor(totalSec / 3600);
-    return `${pad(h)}:${pad(m)}:${pad(s)}${cueDivider}${ms.toString().padStart(3, '0')}`;
-  };
-  const body = segments
-    .map((seg, i) => {
-      const start = fmt(seg.start);
-      const end = fmt(seg.start + Math.max(0.001, seg.duration));
-      const cue = `${start} --> ${end}\n${seg.text.trim()}`;
-      return format === 'srt' ? `${i + 1}\n${cue}\n` : `${cue}\n`;
-    })
-    .join('\n');
-  return format === 'vtt' ? `WEBVTT\n\n${body}` : body;
-}
-
-function pad(n: number): string {
-  return n.toString().padStart(2, '0');
 }

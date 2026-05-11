@@ -9,13 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
 import { extractVideoId } from '@/lib/youtube-url';
 
@@ -93,20 +87,17 @@ export default function NewTranscriptPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Translate to</Label>
-                <Select
+                <Label htmlFor="translate-to">Translate to</Label>
+                <SearchableSelect
+                  id="translate-to"
                   value={translateTo || 'none'}
                   onValueChange={(v) => setTranslateTo(v === 'none' ? '' : v)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-72">
-                    {TARGET_LANGUAGE_OPTIONS.map((l) => (
-                      <SelectItem key={l.code} value={l.code}>{l.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  options={TARGET_LANGUAGE_OPTIONS.map((l) => ({
+                    value: l.code,
+                    label: l.label,
+                  }))}
+                  searchPlaceholder="Search languages…"
+                />
               </div>
               <Button type="submit">Load</Button>
             </div>

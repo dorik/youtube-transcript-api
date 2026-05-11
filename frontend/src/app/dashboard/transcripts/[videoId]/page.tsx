@@ -1,15 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { ApiError, transcripts as transcriptsApi, TranscriptResponse } from '@/lib/api';
-import { TranscriptViewer } from '@/components/dashboard/transcript-viewer';
+import { getApiErrorMessage } from '@/lib/apiError';
+import { TranscriptViewer } from '@/features/transcript-viewer';
 import { buildWatchUrl } from '@/lib/youtube-url';
+import { useTranscriptQuery } from '@/features/transcripts';
 
 /**
  * Path-based viewer. Video id comes from `[videoId]`; optional `language`
@@ -25,38 +25,20 @@ export default function TranscriptViewPage() {
   const langParam = search.get('language') ?? '';
   const translateParam = search.get('translate_to') ?? '';
 
-  const [data, setData] = useState<TranscriptResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const transcriptQuery = useTranscriptQuery(
+    {
+      url: buildWatchUrl(videoId),
+      language: langParam || undefined,
+      translate_to: translateParam || undefined,
+    },
+    !!videoId,
+  );
 
-  // Re-fetch whenever the videoId or relevant query params change. We
-  // don't null out `data` between fetches so an in-viewer translate change
-  // keeps the viewer mounted (with an inline "translating…" spinner).
-  useEffect(() => {
-    if (!videoId) return;
-    let cancelled = false;
-    setLoading(true);
-    setErrorMsg(null);
-    transcriptsApi
-      .fetchAsUser({
-        url: buildWatchUrl(videoId),
-        language: langParam || undefined,
-        translate_to: translateParam || undefined,
-      })
-      .then((d) => {
-        if (!cancelled) setData(d);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setErrorMsg(err instanceof ApiError ? err.message : 'Could not load transcript');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [videoId, langParam, translateParam]);
+  const data = transcriptQuery.data;
+  const loading = transcriptQuery.isLoading;
+  const errorMsg = transcriptQuery.error
+    ? getApiErrorMessage(transcriptQuery.error, 'Could not load transcript')
+    : null;
 
   function onTranslateTargetChange(target: string | null) {
     if (!videoId) return;
@@ -68,7 +50,7 @@ export default function TranscriptViewPage() {
   }
 
   // Inline spinner state — for re-fetches after the viewer is already up.
-  const isRefetching = loading && data !== null;
+  const isRefetching = transcriptQuery.isFetching && !!data;
 
   return (
     <div className="space-y-6 max-w-7xl">

@@ -8,8 +8,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { auth, ApiError } from '@/lib/api';
+import { getApiErrorMessage } from '@/lib/apiError';
 import { SiteNav } from '@/components/marketing/site-nav';
+import { useLoginMutation } from '@/features/auth';
 
 // Next.js requires components calling `useSearchParams()` to be wrapped in
 // a Suspense boundary, otherwise the build refuses to prerender the page.
@@ -30,20 +31,19 @@ function LoginPageImpl() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  const loginMutation = useLoginMutation();
 
-  async function onSubmit(e: React.FormEvent) {
+  function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (submitting) return;
-    setSubmitting(true);
-    try {
-      await auth.login({ email, password });
-      router.push(next);
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : 'Login failed';
-      toast.error(msg);
-      setSubmitting(false);
-    }
+    if (loginMutation.isPending) return;
+
+    loginMutation.mutate(
+      { email, password },
+      {
+        onSuccess: () => router.push(next),
+        onError: (err) => toast.error(getApiErrorMessage(err, 'Login failed')),
+      },
+    );
   }
 
   return (
@@ -79,8 +79,8 @@ function LoginPageImpl() {
                   onChange={(e) => setPassword(e.target.value)}
                 />
               </div>
-              <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting ? 'Signing in…' : 'Sign in'}
+              <Button type="submit" className="w-full" disabled={loginMutation.isPending}>
+                {loginMutation.isPending ? 'Signing in…' : 'Sign in'}
               </Button>
             </form>
             <p className="mt-6 text-sm text-center text-muted-foreground">

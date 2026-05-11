@@ -3,20 +3,20 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { auth } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { useLogoutMutation } from '@/features/auth';
 
 export function DashboardTopbar({ userEmail }: { userEmail: string }) {
   const router = useRouter();
+  const logoutMutation = useLogoutMutation();
 
-  async function handleLogout() {
-    try {
-      await auth.logout();
-    } catch {
-      // Best effort — even if backend errors, push to login.
-    }
-    toast.success('Signed out');
-    router.push('/login');
+  function handleLogout() {
+    logoutMutation.mutate(undefined, {
+      onSettled: () => {
+        toast.success('Signed out');
+        router.push('/login');
+      },
+    });
   }
 
   return (
@@ -28,7 +28,7 @@ export function DashboardTopbar({ userEmail }: { userEmail: string }) {
         </Link>
         <div className="flex items-center gap-3">
           <span className="hidden sm:inline text-sm text-muted-foreground">{userEmail}</span>
-          <Button variant="outline" size="sm" onClick={handleLogout}>
+          <Button variant="outline" size="sm" onClick={handleLogout} disabled={logoutMutation.isPending}>
             Log out
           </Button>
         </div>
