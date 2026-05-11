@@ -7,12 +7,7 @@ import { ExternalLink, Copy, Search, Maximize2, Download, Languages } from 'luci
 import { mountPlayer, type PlayerHandle } from '@/lib/youtube-player';
 import type { TranscriptSegment } from '@/lib/api';
 import { BLOB_URL_TTL_MS } from '@/lib/constants';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
 import { SubtitleOverlay } from './SubtitleOverlay';
 import { SubtitleSettingsPopover } from './SubtitleSettingsPopover';
@@ -233,7 +228,7 @@ export function TranscriptViewer({
     <div className="space-y-4">
       {/* Header card */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between border-b pb-4">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1 flex-wrap">
             <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
               YouTube
@@ -252,7 +247,7 @@ export function TranscriptViewer({
             {data.channel} · {formatDuration(data.duration)} · {data.source.replace('_', ' ')}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {hasToggle && (
             <div
               className="inline-flex items-center rounded-md border bg-muted/40 p-0.5 text-xs font-medium"
@@ -374,34 +369,34 @@ export function TranscriptViewer({
             </div>
 
             {onTranslateTargetChange && (
-              <Select
+              <SearchableSelect
                 value={data.translated_to ?? 'none'}
                 onValueChange={(v) => onTranslateTargetChange(v === 'none' ? null : v)}
                 disabled={isRefetching}
-              >
-                <SelectTrigger
-                  className="h-7 w-auto gap-1 px-2 text-xs"
-                  aria-label="Translate transcript to"
-                >
-                  <Languages className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="uppercase font-medium">
-                    {isRefetching ? '…' : (data.translated_to ?? data.original_language)}
+                // Same option list as the /new page — every language stays
+                // visible regardless of the source. Translating bn→bn is a
+                // benign no-op and not worth a special case.
+                options={TARGET_LANGUAGE_OPTIONS.map((l) => ({
+                  value: l.code,
+                  label: l.label,
+                }))}
+                searchPlaceholder="Search languages…"
+                aria-label="Translate transcript to"
+                // Compact, code-style trigger ("🌐 BN") instead of the full
+                // language label so it doesn't bloat the toolbar.
+                className="h-7 w-auto gap-1 px-2 text-xs"
+                // Popover content stays comfortably wide regardless of the
+                // narrow trigger; otherwise it'd inherit the trigger's width.
+                contentClassName="w-56"
+                renderTriggerLabel={() => (
+                  <span className="flex items-center gap-1">
+                    <Languages className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="uppercase font-medium">
+                      {isRefetching ? '…' : (data.translated_to ?? data.original_language)}
+                    </span>
                   </span>
-                </SelectTrigger>
-                <SelectContent className="max-h-72">
-                  {TARGET_LANGUAGE_OPTIONS.map((l) => (
-                    <SelectItem
-                      key={l.code}
-                      value={l.code}
-                      // Don't offer the source language as a target —
-                      // translating bn→bn is a no-op.
-                      disabled={l.code === data.original_language && l.code !== 'none'}
-                    >
-                      {l.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                )}
+              />
             )}
 
             <div className="flex items-center gap-1.5">
