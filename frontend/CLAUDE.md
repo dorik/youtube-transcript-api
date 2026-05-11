@@ -372,6 +372,40 @@ Use direct `debounce(...)` for callbacks/events. When a controlled input drives 
 
 Date math, string formatting, URL parsing — extract to `src/lib/{concern}.ts`. Do not inline them inside component bodies. Existing examples: `src/lib/youtube-url.ts`, `src/lib/languages.ts`.
 
+### 7.5 No IIFEs inside JSX to compute derived values
+
+If a piece of JSX needs a local derived value (a disabled flag, a tooltip string, a formatted label), declare it as a plain `const` above the `return` and reference it by name. Do **not** wrap the JSX in an immediately-invoked arrow function just to introduce a local binding — it adds two levels of nesting, hides the dependency from readers scanning the component, and breaks the hook-then-helpers-then-JSX flow defined in [§2](#2-hook-ordering).
+
+```tsx
+// BAD — IIFE wraps the JSX just to compute `noKey`
+{(() => {
+  const noKey = showManual ? !manualKey.trim() : !selectedKeyId;
+  return (
+    <Button
+      disabled={submitting || noKey}
+      title={noKey ? 'Select an API key to enable' : undefined}
+    >
+      Fetch
+    </Button>
+  );
+})()}
+
+// GOOD — derived values live above the return, JSX stays flat
+const noKeySelected = showManual ? !manualKey.trim() : !selectedKeyId;
+const submitDisabled = submitting || noKeySelected;
+const submitDisabledReason = noKeySelected
+  ? 'Select an API key to enable'
+  : undefined;
+
+return (
+  <Button disabled={submitDisabled} title={submitDisabledReason}>
+    Fetch
+  </Button>
+);
+```
+
+`useMemo` only when (a) the computation is expensive, or (b) reference stability matters because the value is passed to a memoized child (see [§13.3](#133-memoize-what-gets-passed-down)). For a single boolean or string built from a handful of scalars, a plain `const` is the right tool.
+
 ---
 
 ## 8. Error handling

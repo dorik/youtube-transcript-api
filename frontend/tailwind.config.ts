@@ -6,6 +6,14 @@ const config: Config = {
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+    // Feature folders own their own components — without scanning them,
+    // Tailwind silently drops every class that appears nowhere else. The
+    // playground's `grid grid-cols-3` on the TabsList was the symptom: it
+    // collapsed to base inline-flex and the tabs stacked vertically.
+    './src/features/**/*.{js,ts,jsx,tsx,mdx}',
+    // Same risk applies to any shared lib that emits markup or class
+    // literals. Pre-empting that bug here so it doesn't bite later.
+    './src/lib/**/*.{js,ts,jsx,tsx,mdx}',
   ],
   theme: {
     container: {

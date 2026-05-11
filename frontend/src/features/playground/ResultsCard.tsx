@@ -1,6 +1,8 @@
 import Link from 'next/link';
-import { ExternalLink } from 'lucide-react';
+import { Copy, ExternalLink } from 'lucide-react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { extractVideoId } from '@/lib/youtube-url';
@@ -46,6 +48,28 @@ export function ResultsCard({
 
   const active = results?.[activeIdx];
 
+  // Build the text the Copy button should hand to the clipboard. JSON
+  // format renders as a segment table in the UI (not raw JSON) — so for
+  // that case copy the full envelope a developer would consume. For
+  // text / SRT / VTT / text-timestamps the rendered body IS the
+  // transcript field, so copy that verbatim.
+  const copyTextForActive =
+    active?.ok && active.data
+      ? active.data.format === 'json'
+        ? JSON.stringify(active.data, null, 2)
+        : active.data.transcript
+      : null;
+
+  async function handleCopyResponse() {
+    if (!copyTextForActive) return;
+    try {
+      await navigator.clipboard.writeText(copyTextForActive);
+      toast.success('Response copied to clipboard');
+    } catch {
+      toast.error('Could not access clipboard');
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -60,6 +84,19 @@ export function ResultsCard({
               {active.data.original_language} → {active.data.translated_to}
               {active.data.translation_stubbed ? ' (stub)' : ''}
             </Badge>
+          )}
+          {copyTextForActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleCopyResponse}
+              aria-label="Copy response to clipboard"
+              className="ml-auto h-7 gap-1 px-2 text-xs font-medium"
+            >
+              <Copy className="h-3 w-3" />
+              Copy response
+            </Button>
           )}
           {active?.ok && active.data && (() => {
             // Dashboard viewer is path-based: /dashboard/transcripts/[videoId].
@@ -77,7 +114,7 @@ export function ResultsCard({
             return (
               <Link
                 href={href}
-                className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
+                className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
               >
                 Open in viewer
                 <ExternalLink className="h-3 w-3" />

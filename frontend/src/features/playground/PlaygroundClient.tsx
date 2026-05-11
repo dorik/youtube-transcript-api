@@ -49,9 +49,10 @@ export function PlaygroundClient() {
 	const [tab, setTab] = useState<'videos' | 'playlist' | 'channel'>(
 		'videos',
 	);
-	const [videosText, setVideosText] = useState(
-		'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-	);
+	// Start empty — the Textarea's `placeholder` already shows an example
+	// URL so users can see the expected format without it being a "real"
+	// value they have to delete before pasting their own.
+	const [videosText, setVideosText] = useState('');
 	const [playlistInput, setPlaylistInput] = useState('');
 	const [channelInput, setChannelInput] = useState('');
 	const [channelQuery, setChannelQuery] = useState('');
@@ -117,6 +118,17 @@ export function PlaygroundClient() {
 	const authMode: 'bearer' | 'session' = selectedPlaintext
 		? 'bearer'
 		: 'session';
+
+	// Submit button gating. Mirrors the early-return guards in onSubmit so
+	// the button visibly reflects what the server would accept, instead of
+	// letting the user click and seeing a toast.error round-trip.
+	const noKeySelected = showManual ? !manualKey.trim() : !selectedKeyId;
+	const submitDisabled = submitting || noKeySelected;
+	const submitDisabledReason = noKeySelected
+		? showManual
+			? 'Paste an API key to enable'
+			: 'Select an API key to enable'
+		: undefined;
 
 	// The cURL we display always shows the public-API form, regardless of
 	// which auth path the in-browser request takes — that's the snippet a
@@ -628,8 +640,9 @@ export function PlaygroundClient() {
 
 								<Button
 									type="submit"
-									disabled={submitting}
+									disabled={submitDisabled}
 									className="w-full"
+									title={submitDisabledReason}
 								>
 									{submitting
 										? `Fetching ${results?.length ?? 0}…`

@@ -22,11 +22,14 @@ const Tabs = React.forwardRef<
     ref={ref}
     orientation={orientation}
     data-slot="tabs"
-    className={cn(
-      'flex gap-2',
-      'data-[orientation=horizontal]:flex-col',
-      className,
-    )}
+    // Always stack vertically (TabsList above TabsContent). This codebase
+    // never uses orientation="vertical" — the previous
+    // `data-[orientation=horizontal]:flex-col` variant was both dead
+    // complexity and a foot-gun: when it didn't activate (Radix/Tailwind
+    // arbitrary-data quirks), the root reverted to flex-row and the tab
+    // bar rendered beside the content panel. If you ever need vertical
+    // tabs, override with `className="flex-row"` from the call site.
+    className={cn('flex flex-col gap-2', className)}
     {...props}
   />
 ));
