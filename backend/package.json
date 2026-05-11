@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "deploy": "render deploys create srv-d80qedl7vvec73ef1qs0 --confirm --wait"
   },
   "dependencies": {
     "axios": "^1.7.7",
