@@ -9,6 +9,7 @@ const ITEMS = [
   { href: '/dashboard/transcripts', label: 'Transcripts' },
   { href: '/dashboard/api-keys', label: 'API Keys' },
   { href: '/dashboard/usage', label: 'Usage' },
+  { href: '/dashboard/playground', label: 'Playground' },
   { href: '/dashboard/billing', label: 'Billing' },
 ];
 
@@ -43,13 +44,6 @@ export function DashboardSidebar() {
           className="rounded-md px-3 py-2 text-muted-foreground hover:bg-accent hover:text-foreground flex items-center justify-between"
         >
           Docs
-          <span aria-hidden>↗</span>
-        </Link>
-        <Link
-          href="/playground"
-          className="rounded-md px-3 py-2 text-muted-foreground hover:bg-accent hover:text-foreground flex items-center justify-between"
-        >
-          Playground
           <span aria-hidden>↗</span>
         </Link>
       </nav>

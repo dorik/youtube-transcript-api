@@ -79,7 +79,7 @@ export default function OverviewPage() {
           ) : !usageData?.recent.length ? (
             <p className="text-sm text-muted-foreground">
               No requests yet. Try the{' '}
-              <Link href="/playground" className="font-medium text-foreground hover:underline">
+              <Link href="/dashboard/playground" className="font-medium text-foreground hover:underline">
                 playground
               </Link>{' '}
               or hit the API with curl.

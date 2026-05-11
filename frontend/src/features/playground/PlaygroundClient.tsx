@@ -4,8 +4,6 @@ import {useEffect, useMemo, useState} from 'react';
 import Link from 'next/link';
 import {toast} from 'sonner';
 import {Copy} from 'lucide-react';
-import {SiteNav} from '@/components/marketing/site-nav';
-import {SiteFooter} from '@/components/marketing/site-footer';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
@@ -253,15 +251,13 @@ export function PlaygroundClient() {
 	}
 
 	return (
-		<>
-			<SiteNav />
-			<main className="container mx-auto px-4 max-w-7xl py-12">
-				<h1 className="text-4xl font-bold tracking-tight mb-2">
-					Playground
-				</h1>
-				<p className="text-muted-foreground mb-8">
-					Try the API live. Paste URLs, pick a saved key, hit Fetch.
-				</p>
+		<div className="max-w-7xl">
+			<h1 className="text-4xl font-bold tracking-tight mb-2">
+				Playground
+			</h1>
+			<p className="text-muted-foreground mb-8">
+				Try the API live. Paste URLs, pick a saved key, hit Fetch.
+			</p>
 
 				<div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 					{/* ----- Request ----- */}
@@ -692,8 +688,6 @@ export function PlaygroundClient() {
 						</Card>
 					</div>
 				</div>
-			</main>
-			<SiteFooter />
-		</>
+		</div>
 	);
 }

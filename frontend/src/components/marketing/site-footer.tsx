@@ -8,7 +8,6 @@ export function SiteFooter() {
         <nav className="flex items-center gap-4">
           <Link href="/pricing" className="hover:text-foreground">Pricing</Link>
           <Link href="/docs" className="hover:text-foreground">Docs</Link>
-          <Link href="/playground" className="hover:text-foreground">Playground</Link>
         </nav>
       </div>
     </footer>

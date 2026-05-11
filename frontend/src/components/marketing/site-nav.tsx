@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 const NAV_LINKS = [
   { href: '/pricing', label: 'Pricing' },
   { href: '/docs', label: 'Docs' },
-  { href: '/playground', label: 'Playground' },
 ];
 
 export function SiteNav() {
