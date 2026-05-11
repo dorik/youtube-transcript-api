@@ -17,6 +17,29 @@ export interface CachedTranscript {
 
 const TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
+/**
+ * Known placeholder transcripts we don't want to serve out of the cache.
+ *
+ * Pre-fix code persisted the Whisper stub ("Upgrade your plan…") into the
+ * cache as if it were a real transcript, which then got translated +
+ * re-cached for every target language. We treat anything starting with
+ * one of these markers as a cache miss and proactively evict the row, so
+ * legacy poisoned data self-heals on the next read.
+ *
+ * Add new prefixes here if other canned/error placeholders ever leak into
+ * the cache layer (e.g. a deprecated rate-limit message). Use the first
+ * 50–80 chars — long enough to be unique, short enough to survive minor
+ * copy edits to the trailing portion of the string.
+ */
+const PLACEHOLDER_MARKERS = [
+  'AI transcription (Whisper) is only available on paid plans.',
+];
+
+export function isPlaceholderTranscript(text: string): boolean {
+  if (!text) return false;
+  return PLACEHOLDER_MARKERS.some((marker) => text.startsWith(marker));
+}
+
 function key(videoId: string, language: string): string {
   return `transcript:${videoId}:${language}`;
 }
@@ -43,7 +66,19 @@ export async function getCached(
     const fromRedis = await redis.get(key(videoId, language));
     if (fromRedis) {
       try {
-        return JSON.parse(fromRedis) as CachedTranscript;
+        const parsed = JSON.parse(fromRedis) as CachedTranscript;
+        // Self-heal: a legacy stub poisoned this slot. Drop it from Redis
+        // and fall through to Postgres (which may or may not also be
+        // polluted). Caller treats us as a miss → re-fetch fresh content.
+        if (isPlaceholderTranscript(parsed.transcript)) {
+          logger.info(
+            { videoId, language },
+            'Cache: evicting placeholder transcript from Redis',
+          );
+          await redis.del(key(videoId, language)).catch(() => {});
+        } else {
+          return parsed;
+        }
       } catch (err) {
         logger.warn({ err, videoId }, 'Cache: corrupted Redis payload, ignoring');
       }
@@ -95,6 +130,31 @@ export async function getCached(
   if (!rows.length) return null;
 
   const row = rows[0];
+
+  // Self-heal: legacy stub row from before write-side prevention landed.
+  // Delete it and signal a miss so the orchestrator re-fetches fresh.
+  // We use the row's own (video_id, language) for the DELETE, not the
+  // request's — they can differ when the 'auto' lookup fell back to the
+  // any-language path above.
+  if (isPlaceholderTranscript(row.transcript_text)) {
+    logger.info(
+      { videoId, language: row.language, requestedLanguage: language },
+      'Cache: evicting placeholder transcript from Postgres',
+    );
+    await pool
+      .query(
+        `DELETE FROM cached_transcripts WHERE video_id = $1 AND language = $2`,
+        [row.video_id, row.language],
+      )
+      .catch((err) => {
+        logger.warn(
+          { err, videoId: row.video_id },
+          'Cache: failed to delete placeholder row (will retry on next read)',
+        );
+      });
+    return null;
+  }
+
   const cached: CachedTranscript = {
     videoId: row.video_id,
     language: row.language,
