@@ -23,7 +23,7 @@ import {
   ApiError,
   NoTranscriptError,
   PaymentRequiredError,
-  RateLimitError,
+  UpstreamBlockedError,
   ValidationError,
 } from '../utils/errors';
 import { logger } from '../config/logger';
@@ -321,18 +321,18 @@ async function fetchTranscript(
       logger.info({ videoId, allowRealWhisper }, 'No native captions; falling back to Whisper');
       return await transcribeWithWhisper(videoId, language, whisperOpts);
     }
-    // YouTube is rate-limiting our IP (very common on datacenter hosts like
-    // Render where every tenant shares the same egress range). Native
-    // captions are unreachable until the throttle clears, but yt-dlp uses
-    // different YouTube endpoints and is usually still fine — fall back to
-    // Whisper instead of bubbling a 429 to the user.
-    if (err instanceof RateLimitError) {
-      if (nativeOnly) {
-        // Caller explicitly opted out of Whisper, so we have to surface it.
-        throw err;
-      }
-      logger.warn({ videoId, allowRealWhisper }, 'YouTube throttled our IP; falling back to Whisper');
-      return await transcribeWithWhisper(videoId, language, whisperOpts);
+    // YouTube is refusing to serve our IP — either an HTTP 429 from their
+    // edge or the "Sign in to confirm you're not a bot" challenge that
+    // fires for shared datacenter ranges (Render et al.). We used to fall
+    // back to Whisper here on the theory that yt-dlp's audio path hit
+    // different YouTube endpoints, but that's no longer true: in practice
+    // both paths share egress and both hit the same wall, so falling back
+    // just burns ~30s of yt-dlp time before failing anyway. Surface
+    // immediately so the user can retry once the operator rotates
+    // PROXY_URL / YT_COOKIES_PATH.
+    if (err instanceof UpstreamBlockedError) {
+      logger.warn({ videoId, allowRealWhisper }, 'YouTube is blocking our IP; surfacing 503');
+      throw err;
     }
     if (err instanceof ApiError) throw err;
     // Unknown error inside the YouTube layer: treat as Whisper-eligible to

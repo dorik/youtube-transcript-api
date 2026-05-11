@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 import { config } from '../config/env';
 import { logger } from '../config/logger';
 import { Segment } from './formatters';
+import { mapYtDlpError, ytDlpNetworkArgs } from './youtubeService';
 
 const execFileAsync = promisify(execFile);
 
@@ -91,18 +92,29 @@ async function realWhisper(videoId: string, language?: string): Promise<WhisperR
 
   try {
     logger.info({ videoId }, 'Whisper: extracting audio with yt-dlp');
-    await execFileAsync(
-      'yt-dlp',
-      [
-        '-f', 'bestaudio',
-        '-x',
-        '--audio-format', 'mp3',
-        '--audio-quality', '192K',
-        '-o', audioPath,
-        `https://www.youtube.com/watch?v=${videoId}`,
-      ],
-      { timeout: 120_000 },
-    );
+    try {
+      await execFileAsync(
+        'yt-dlp',
+        [
+          '-f', 'bestaudio',
+          '-x',
+          '--audio-format', 'mp3',
+          '--audio-quality', '192K',
+          '-o', audioPath,
+          // Apply the same proxy/cookie config as the caption path —
+          // otherwise the audio download still egresses from the bare
+          // server IP and hits YouTube's bot wall.
+          ...ytDlpNetworkArgs(),
+          `https://www.youtube.com/watch?v=${videoId}`,
+        ],
+        { timeout: 120_000 },
+      );
+    } catch (err) {
+      // Route bot-challenges / video-removed / etc. through the shared
+      // mapper. Without this, the raw execFile rejection bubbled up to the
+      // express error handler as an opaque 500 ("Unhandled error").
+      throw mapYtDlpError(err, videoId, 'whisper-audio');
+    }
 
     const stat = fs.statSync(audioPath);
     if (stat.size > 25 * 1024 * 1024) {

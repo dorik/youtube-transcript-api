@@ -102,3 +102,23 @@ export class VideoNotFoundError extends ApiError {
     );
   }
 }
+
+/**
+ * YouTube is refusing to serve our IP — either an HTTP 429 from their edge or
+ * the "Sign in to confirm you're not a bot" challenge that fires for shared
+ * datacenter ranges. The user hasn't done anything wrong; the operator needs
+ * to rotate the egress IP (PROXY_URL) or supply a cookie jar
+ * (YT_COOKIES_PATH). Surfacing 503 keeps this out of the "user exceeded their
+ * rate limit" bucket that `RateLimitError` is for.
+ */
+export class UpstreamBlockedError extends ApiError {
+  constructor(retryAfterSeconds = 60) {
+    super(
+      503,
+      'UPSTREAM_BLOCKED',
+      'upstream_blocked',
+      'YouTube is currently blocking our server. Please try again shortly.',
+      { retry_after: retryAfterSeconds },
+    );
+  }
+}

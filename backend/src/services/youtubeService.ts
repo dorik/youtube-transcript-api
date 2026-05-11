@@ -5,7 +5,7 @@ import { config } from '../config/env';
 import { logger } from '../config/logger';
 import {
   NoTranscriptError,
-  RateLimitError,
+  UpstreamBlockedError,
   VideoNotFoundError,
 } from '../utils/errors';
 import { Segment } from './formatters';
@@ -99,7 +99,11 @@ interface Json3Caption {
  * - `NoTranscriptError` — captions are disabled or unavailable. Caller may
  *   fall back to Whisper.
  * - `VideoNotFoundError` — video does not exist / is private / was removed.
- * - `RateLimitError` — YouTube is throttling us or serving the bot challenge.
+ * - `UpstreamBlockedError` — YouTube is throttling us (HTTP 429) or serving
+ *   the "Sign in to confirm you're not a bot" challenge. Falling back to
+ *   Whisper won't help — both yt-dlp paths share the same egress IP, so the
+ *   audio download will hit the same wall. Operator needs to set PROXY_URL
+ *   or YT_COOKIES_PATH.
  */
 export async function fetchYouTubeCaptions(
   videoId: string,
@@ -163,10 +167,8 @@ async function dumpVideoInfo(videoId: string): Promise<YtDlpDump> {
     // Defensive: a stray `&list=` in the URL would otherwise trigger a
     // playlist walk we don't want.
     '--no-playlist',
+    ...ytDlpNetworkArgs(),
   ];
-  if (config.PROXY_URL) {
-    args.push('--proxy', config.PROXY_URL);
-  }
 
   let stdout: string;
   try {
@@ -350,13 +352,41 @@ async function fetchAndParseJson3(url: string, videoId: string): Promise<Segment
 }
 
 /**
+ * Build the proxy/cookie args shared by every yt-dlp invocation in this app.
+ *
+ * Kept as a function (not a constant) because `config` is loaded once at
+ * boot — using a function lets us defensively re-read on each call without
+ * tying tests to module-import order.
+ */
+export function ytDlpNetworkArgs(): string[] {
+  const args: string[] = [];
+  if (config.PROXY_URL) {
+    args.push('--proxy', config.PROXY_URL);
+  }
+  if (config.YT_COOKIES_PATH) {
+    // The only knob YouTube currently respects for "Sign in to confirm
+    // you're not a bot" without an IP rotation. Path must point at a
+    // Netscape-format cookies file the process can read.
+    args.push('--cookies', config.YT_COOKIES_PATH);
+  }
+  return args;
+}
+
+/**
  * Translate a yt-dlp subprocess failure into one of our domain errors.
  *
  * yt-dlp doesn't expose structured exit codes for these conditions — we have
  * to grep its stderr. The patterns below are stable across recent yt-dlp
  * releases; if YouTube changes the wording, new branches go here.
+ *
+ * `context` is used only for the fallback log line — pass 'captions' or
+ * 'whisper-audio' so triage can tell which yt-dlp path failed.
  */
-function mapYtDlpError(err: unknown, videoId: string): Error {
+export function mapYtDlpError(
+  err: unknown,
+  videoId: string,
+  context: 'captions' | 'whisper-audio' = 'captions',
+): Error {
   const stderr = isExecError(err) && typeof err.stderr === 'string' ? err.stderr : '';
   const message = err instanceof Error ? err.message : String(err);
   const blob = `${stderr}\n${message}`.toLowerCase();
@@ -379,14 +409,14 @@ function mapYtDlpError(err: unknown, videoId: string): Error {
     blob.includes('sign in to confirm you’re not a bot') ||
     blob.includes('sign in to confirm your age')
   ) {
-    return new RateLimitError(60);
+    return new UpstreamBlockedError(60);
   }
 
   // Truncate stderr in the log line — yt-dlp can produce many KB of debug
   // output and we only need the first error line for triage.
   logger.warn(
-    { err, videoId, stderr: stderr.slice(0, 500) },
-    'yt-dlp caption fetch failed; treating as no-transcript',
+    { err, videoId, context, stderr: stderr.slice(0, 500) },
+    'yt-dlp call failed; treating as no-transcript',
   );
   return new NoTranscriptError(videoId);
 }

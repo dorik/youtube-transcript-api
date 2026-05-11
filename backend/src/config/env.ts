@@ -49,6 +49,14 @@ const EnvSchema = z.object({
 
   OPENAI_API_KEY: z.string().optional(),
   PROXY_URL: z.string().optional(),
+  /**
+   * Absolute path to a Netscape-format cookies file for yt-dlp. When YouTube
+   * starts serving the bot challenge to our datacenter IP, this is the only
+   * code-level lever that can unblock requests without changing egress.
+   * Generate with `yt-dlp --cookies-from-browser <browser> --cookies <file>`
+   * on a logged-in workstation, upload to the server, set this var.
+   */
+  YT_COOKIES_PATH: z.string().optional(),
 
   RATE_LIMIT_REQUESTS_PER_MIN: z.coerce.number().default(100),
 });

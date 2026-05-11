@@ -8,6 +8,7 @@ import {
   PaymentRequiredError,
   RateLimitError,
   UnauthorizedError,
+  UpstreamBlockedError,
   ValidationError,
   VideoNotFoundError,
 } from './errors';
@@ -134,5 +135,30 @@ describe('VideoNotFoundError', () => {
     expect(err.status).toBe(404);
     expect(err.code).toBe('VIDEO_NOT_FOUND');
     expect(err.message).toContain('xyz999');
+  });
+});
+
+describe('UpstreamBlockedError', () => {
+  it('is 503 / UPSTREAM_BLOCKED with retry_after in details', () => {
+    const err = new UpstreamBlockedError(90);
+    expect(err.status).toBe(503);
+    expect(err.code).toBe('UPSTREAM_BLOCKED');
+    expect(err.errorType).toBe('upstream_blocked');
+    expect(err.details).toEqual({ retry_after: 90 });
+    expect(err.toJSON()).toMatchObject({ retry_after: 90 });
+  });
+
+  it('defaults retry_after to 60', () => {
+    const err = new UpstreamBlockedError();
+    expect(err.details).toEqual({ retry_after: 60 });
+  });
+
+  // Message intentionally talks about "our server" rather than "your rate
+  // limit" — keep it that way so users don't confuse this with hitting
+  // their own per-account RateLimitError.
+  it('does not claim the user exceeded their rate limit', () => {
+    const err = new UpstreamBlockedError();
+    expect(err.message).not.toMatch(/your rate limit/i);
+    expect(err.message).toMatch(/youtube/i);
   });
 });
