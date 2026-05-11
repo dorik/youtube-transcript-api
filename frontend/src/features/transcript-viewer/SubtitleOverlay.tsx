@@ -7,6 +7,7 @@ import {
   resolveTextColor,
   type SubtitleSettings,
 } from '@/lib/subtitle-settings';
+import { findActiveSegment } from './utils';
 
 interface Props {
   segments: TranscriptSegment[];
@@ -174,21 +175,3 @@ function SegmentLine({
   );
 }
 
-function findActiveSegment(segments: TranscriptSegment[], time: number): number {
-  // Same binary search the segment list uses; duplicated here because this
-  // component is independent of the right-pane list.
-  let lo = 0;
-  let hi = segments.length - 1;
-  let last = -1;
-  while (lo <= hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    const s = segments[mid];
-    if (s.start <= time) {
-      last = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return last;
-}

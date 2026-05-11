@@ -13,6 +13,7 @@ import { meTranscriptsRouter } from './routes/meTranscripts';
 import { billingRouter } from './routes/billing';
 import { webhooksRouter } from './routes/webhooks';
 import { usageRouter } from './routes/usage';
+import { youtubeBrowseRouter } from './routes/youtubeBrowse';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 /**
@@ -82,6 +83,7 @@ export function createApp(): Application {
   app.use('/me/transcript', meTranscriptRouter);
   app.use('/me/transcripts', meTranscriptsRouter);
   app.use('/v1', transcriptRouter);
+  app.use('/v1', youtubeBrowseRouter);
   app.use(billingRouter); // mounts /plans, /me/subscription, /billing/checkout, /billing/stub-activate
   app.use('/webhooks', webhooksRouter);
 

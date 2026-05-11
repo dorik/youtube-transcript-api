@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { HistoryItem } from '@/lib/api';
-import { formatDuration, formatRelative } from './utils';
+import { formatRelativeTime, formatTimecode } from '@/lib/format';
 
 /**
  * One row in the transcripts history list. Memoized so re-renders of the
@@ -27,7 +27,7 @@ export const HistoryRow = memo(function HistoryRow({ item }: { item: HistoryItem
             />
             {item.duration_seconds ? (
               <span className="absolute bottom-1 right-1 rounded bg-black/80 text-white text-[10px] font-medium px-1 py-0.5 tabular-nums">
-                {formatDuration(item.duration_seconds)}
+                {formatTimecode(item.duration_seconds)}
               </span>
             ) : null}
           </div>
@@ -38,7 +38,7 @@ export const HistoryRow = memo(function HistoryRow({ item }: { item: HistoryItem
                 {item.title ?? <span className="text-muted-foreground">Untitled</span>}
               </h3>
               <span className="text-[11px] text-muted-foreground whitespace-nowrap shrink-0">
-                {formatRelative(item.last_fetched_at)}
+                {formatRelativeTime(item.last_fetched_at)}
               </span>
             </div>
             <p className="text-xs text-muted-foreground truncate">

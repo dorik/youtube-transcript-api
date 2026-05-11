@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { useBillingSubscriptionQuery } from '@/features/billing';
 import { useUsageQuery } from '@/features/usage';
+import { formatDate, formatRelativeTime } from '@/lib/format';
 
 export default function OverviewPage() {
   const billingQuery = useBillingSubscriptionQuery();
@@ -99,7 +100,7 @@ export default function OverviewPage() {
                   {usageData.recent.slice(0, 8).map((r) => (
                     <tr key={r.id} className="border-b last:border-0">
                       <td className="py-2 pr-4 whitespace-nowrap text-muted-foreground">
-                        {formatRelative(r.created_at)}
+                        {formatRelativeTime(r.created_at)}
                       </td>
                       <td className="py-2 pr-4 font-mono text-xs">{r.video_id ?? '—'}</td>
                       <td className="py-2 pr-4">
@@ -170,17 +171,3 @@ function StatusBadge({ status }: { status: number }) {
   );
 }
 
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString();
-}
-
-function formatRelative(iso: string): string {
-  const ts = new Date(iso).getTime();
-  const diff = Date.now() - ts;
-  const minutes = Math.round(diff / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return new Date(iso).toLocaleDateString();
-}
