@@ -12,14 +12,14 @@ import type {
 
 function getPlansQuery() {
   return {
-    url: '/plans',
+    url: '/billing/plans',
     method: methodsEnums.GET,
   };
 }
 
 function getBillingSubscriptionQuery() {
   return {
-    url: '/me/subscription',
+    url: '/billing/subscription',
     method: methodsEnums.GET,
   };
 }

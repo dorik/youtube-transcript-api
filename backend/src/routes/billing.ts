@@ -12,6 +12,10 @@ import { getCreditState } from '../services/creditService';
 import { config } from '../config/env';
 import { ValidationError } from '../utils/errors';
 
+/**
+ * Mounted under `/billing` (see app.ts). Every path here is billing-domain
+ * by definition, so we don't repeat `/billing` in the path strings.
+ */
 export const billingRouter = Router();
 
 billingRouter.get('/plans', (_req, res) => {
@@ -27,7 +31,7 @@ billingRouter.get('/plans', (_req, res) => {
   });
 });
 
-billingRouter.get('/me/subscription', sessionAuth, async (req, res, next) => {
+billingRouter.get('/subscription', sessionAuth, async (req, res, next) => {
   try {
     const [sub, credits] = await Promise.all([
       getUserSubscription(req.user!.id),
@@ -43,7 +47,7 @@ const CheckoutSchema = z.object({
   plan: z.enum(['starter', 'pro', 'business']),
 });
 
-billingRouter.post('/billing/checkout', sessionAuth, async (req, res, next) => {
+billingRouter.post('/checkout', sessionAuth, async (req, res, next) => {
   try {
     const parsed = CheckoutSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -72,7 +76,7 @@ const StubActivateSchema = z.object({
   plan: z.enum(['starter', 'pro', 'business']),
 });
 
-billingRouter.post('/billing/stub-activate', sessionAuth, async (req, res, next) => {
+billingRouter.post('/stub-activate', sessionAuth, async (req, res, next) => {
   try {
     if (!config.STUB_STRIPE) {
       return res.status(404).json({ error: 'not_found', code: 'NOT_AVAILABLE', message: 'Stub activation is disabled in production billing mode.' });
@@ -84,7 +88,10 @@ billingRouter.post('/billing/stub-activate', sessionAuth, async (req, res, next)
     await applyPlanUpgrade({
       userId: req.user!.id,
       plan: parsed.data.plan as PlanId,
-      stripeEventId: `stub_${Date.now()}_${req.user!.id.slice(0, 8)}`,
+      // Deterministic so re-clicking the success page doesn't litter
+      // `billing_events` with duplicate audit rows. The subscription/credits
+      // upsert in `applyPlanUpgrade` still runs either way.
+      stripeEventId: `stub_${req.user!.id}_${parsed.data.plan}`,
     });
     res.json({ ok: true });
   } catch (err) {

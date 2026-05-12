@@ -223,9 +223,9 @@ export const apiKeys = {
 };
 
 export const billing = {
-  plans: () => api<{ plans: Plan[] }>('/plans'),
+  plans: () => api<{ plans: Plan[] }>('/billing/plans'),
   subscription: () =>
-    api<{ subscription: Subscription | null; credits: CreditState }>('/me/subscription'),
+    api<{ subscription: Subscription | null; credits: CreditState }>('/billing/subscription'),
   checkout: (plan: 'starter' | 'pro' | 'business') =>
     api<{ url: string; mode: 'stub' | 'live' }>('/billing/checkout', {
       method: 'POST',
