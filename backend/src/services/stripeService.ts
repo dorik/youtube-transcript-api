@@ -117,9 +117,159 @@ async function getStoredStripeCustomerId(
 }
 
 /**
+ * Read everything we need to decide whether a "switch plans" request should
+ * go through a new Checkout Session (first-time signup, or post-cancel
+ * re-signup) or update the existing subscription in place.
+ */
+async function getStoredSubscription(userId: string): Promise<{
+	planId: PlanId | null;
+	stripeSubscriptionId: string | null;
+	status: string | null;
+} | null> {
+	const {rows} = await pool.query<{
+		plan_id: PlanId | null;
+		stripe_subscription_id: string | null;
+		status: string | null;
+	}>(
+		`SELECT plan_id, stripe_subscription_id, status FROM subscriptions WHERE user_id = $1 LIMIT 1`,
+		[userId],
+	);
+	if (!rows[0]) return null;
+	return {
+		planId: rows[0].plan_id,
+		stripeSubscriptionId: rows[0].stripe_subscription_id,
+		status: rows[0].status,
+	};
+}
+
+/**
+ * Swap the price on an existing Stripe Subscription instead of minting a
+ * brand-new one through Checkout.
+ *
+ * This is THE plan-change path for any user who already has an active
+ * subscription. The previous code always went through Checkout, which
+ * (a) charged the customer's card *again* immediately and
+ * (b) left the original subscription active — so the customer would be
+ * billed twice forever.
+ *
+ * Stripe defaults `proration_behavior` to `create_prorations`, which:
+ *   - issues a credit line item for the unused portion of the old plan,
+ *   - issues a charge line item for the new plan's prorated cost,
+ *   - nets them out on the *next* invoice (no immediate card charge).
+ *
+ * The customer.subscription.updated webhook fires right after this call;
+ * our handler (handleSubscriptionUpdated) turns that into an
+ * applyPlanUpgrade that updates our DB and refills credits. So we do NOT
+ * touch our DB here — webhook stays the single source of truth and we
+ * avoid double-allocating credits.
+ */
+async function updateSubscriptionPlan(opts: {
+	userId: string;
+	stripeSubscriptionId: string;
+	plan: PlanId;
+}): Promise<void> {
+	if (opts.plan === 'free') {
+		throw new Error(
+			'Cannot switch to Free via plan update; cancel the subscription instead',
+		);
+	}
+	const planConfig = PLANS[opts.plan];
+	const priceId = config[planConfig.stripePriceEnvKey!] as string | undefined;
+	if (!priceId) {
+		throw new Error(
+			`Stripe price ID is not configured for plan ${opts.plan}`,
+		);
+	}
+	const stripe = getStripe();
+	// Need the existing item ID to swap its price; Stripe rejects updates
+	// that just specify a new price without saying which line item to mutate.
+	const current = await stripe.subscriptions.retrieve(
+		opts.stripeSubscriptionId,
+	);
+	const currentItemId = current.items.data[0]?.id;
+	if (!currentItemId) {
+		throw new Error(
+			`Subscription ${opts.stripeSubscriptionId} has no items to update`,
+		);
+	}
+	await stripe.subscriptions.update(opts.stripeSubscriptionId, {
+		items: [{id: currentItemId, price: priceId}],
+		proration_behavior: 'create_prorations',
+		metadata: {user_id: opts.userId, plan: opts.plan},
+	});
+}
+
+export type ChangePlanOutcome =
+	| {status: 'noop'; reason: 'already_on_plan'}
+	| {status: 'no_subscription'} // caller should redirect to checkout
+	| {status: 'changed'; mode: 'stub' | 'live'};
+
+/**
+ * Switch an existing subscription to a different paid plan.
+ *
+ * Returns a discriminated union so the route can translate "no active
+ * subscription" into a clean 4xx telling the frontend to go through
+ * /billing/checkout instead. Doing the dispatch here instead of in the
+ * route keeps the Stripe details out of the HTTP layer.
+ *
+ * Live mode mutates the Stripe Subscription's price item with prorations
+ * (no immediate charge — proration nets out on the next invoice). The
+ * customer.subscription.updated webhook then syncs our DB. We deliberately
+ * don't touch our DB here so the webhook stays the single source of truth
+ * and credits aren't refilled twice.
+ *
+ * Stub mode short-circuits straight to applyPlanUpgrade so dev/QA workflows
+ * don't need Stripe configured.
+ */
+export async function changeSubscriptionPlan(opts: {
+	userId: string;
+	plan: PlanId;
+}): Promise<ChangePlanOutcome> {
+	if (opts.plan === 'free') {
+		throw new Error(
+			'Cannot switch to Free via change-plan; cancel the subscription instead',
+		);
+	}
+
+	const stored = await getStoredSubscription(opts.userId);
+	const hasActive =
+		stored?.status === 'active' && !!stored.stripeSubscriptionId;
+
+	if (!hasActive) {
+		return {status: 'no_subscription'};
+	}
+
+	if (stored?.planId === opts.plan) {
+		return {status: 'noop', reason: 'already_on_plan'};
+	}
+
+	if (config.STUB_STRIPE) {
+		// No Stripe round-trip; flip the plan locally just like stub-activate.
+		await applyPlanUpgrade({
+			userId: opts.userId,
+			plan: opts.plan,
+			stripeEventId: `stub_change_${opts.userId}_${opts.plan}_${Date.now()}`,
+		});
+		return {status: 'changed', mode: 'stub'};
+	}
+
+	await updateSubscriptionPlan({
+		userId: opts.userId,
+		stripeSubscriptionId: stored!.stripeSubscriptionId!,
+		plan: opts.plan,
+	});
+	return {status: 'changed', mode: 'live'};
+}
+
+/**
  * Create a checkout session and return the URL the user should be redirected
  * to. In stub mode we return a frontend route that the dashboard treats as a
  * "stub success" — clicking it activates the upgrade locally.
+ *
+ * This is for FIRST-TIME paid signups only (free → paid, or post-cancel
+ * re-signup). For an existing active subscriber switching plans, use
+ * `changeSubscriptionPlan` — going through Checkout for those users
+ * creates a second active subscription and double-bills them.
  */
 export async function createCheckoutSession(opts: {
 	userId: string;

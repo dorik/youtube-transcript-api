@@ -5,6 +5,7 @@ import type {
   BillingOverviewResponse,
   BillingPlansResponse,
   BillingSubscriptionResponse,
+  ChangePlanResponse,
   CheckoutResponse,
   PaidPlanId,
   StubActivateResponse,
@@ -35,6 +36,14 @@ function startCheckoutQuery(plan: PaidPlanId) {
 function activateStubPlanQuery(plan: PaidPlanId) {
   return {
     url: '/billing/stub-activate',
+    method: methodsEnums.POST,
+    data: { plan },
+  };
+}
+
+function changeSubscriptionPlanQuery(plan: PaidPlanId) {
+  return {
+    url: '/billing/change-plan',
     method: methodsEnums.POST,
     data: { plan },
   };
@@ -71,4 +80,9 @@ export const startCheckout = createApi<PaidPlanId, CheckoutResponse>({
 export const activateStubPlan = createApi<PaidPlanId, StubActivateResponse>({
   queryFn: apiClient,
   query: activateStubPlanQuery,
+});
+
+export const changeSubscriptionPlan = createApi<PaidPlanId, ChangePlanResponse>({
+  queryFn: apiClient,
+  query: changeSubscriptionPlanQuery,
 });

@@ -5,6 +5,7 @@ import {
   PLANS,
   PlanId,
   applyPlanUpgrade,
+  changeSubscriptionPlan,
   createCheckoutSession,
   getUserSubscription,
 } from '../services/stripeService';
@@ -59,6 +60,48 @@ billingRouter.post('/checkout', sessionAuth, async (req, res, next) => {
       plan: parsed.data.plan,
     });
     res.json({ url, mode });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Switch the plan on an existing subscription. Use this — NOT /checkout —
+ * for upgrades/downgrades; /checkout would mint a second Stripe Subscription
+ * and double-bill the customer.
+ *
+ * Returns:
+ *   200 {status:'changed', mode}        — Stripe (or stub) accepted the plan switch.
+ *                                          Webhook will refill credits / update DB.
+ *   200 {status:'noop'}                  — User is already on this plan.
+ *   409 {code:'NO_ACTIVE_SUBSCRIPTION'}  — User has no active subscription;
+ *                                          frontend should hit /checkout instead.
+ */
+const ChangePlanSchema = z.object({
+  plan: z.enum(['starter', 'pro', 'business']),
+});
+
+billingRouter.post('/change-plan', sessionAuth, async (req, res, next) => {
+  try {
+    const parsed = ChangePlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid plan', { issues: parsed.error.flatten().fieldErrors });
+    }
+    const outcome = await changeSubscriptionPlan({
+      userId: req.user!.id,
+      plan: parsed.data.plan,
+    });
+    if (outcome.status === 'no_subscription') {
+      return res.status(409).json({
+        error: 'no_active_subscription',
+        code: 'NO_ACTIVE_SUBSCRIPTION',
+        message: 'No active subscription to change. Start a new checkout instead.',
+      });
+    }
+    if (outcome.status === 'noop') {
+      return res.json({ status: 'noop' });
+    }
+    res.json({ status: 'changed', mode: outcome.mode });
   } catch (err) {
     next(err);
   }

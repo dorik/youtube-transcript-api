@@ -1,15 +1,17 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import { ApiError } from '@/lib/api';
 import { getApiErrorMessage } from '@/lib/apiError';
 import {
   useBillingOverviewQuery,
+  useChangePlanMutation,
   useCheckoutMutation,
   useStubActivateMutation,
   type PaidPlanId,
@@ -30,40 +32,83 @@ export default function BillingPage() {
 
   const billingOverviewQuery = useBillingOverviewQuery();
   const checkoutMutation = useCheckoutMutation();
+  const changePlanMutation = useChangePlanMutation();
   const stubActivateMutation = useStubActivateMutation();
 
   const data = billingOverviewQuery.data;
   const loading = billingOverviewQuery.isLoading;
   const currentPlanId = data?.subscription?.plan_id ?? 'free';
   const currentRank = PLAN_RANK[currentPlanId] ?? 0;
+  // Two distinct paths live behind one button:
+  //  - First-time paid signup (or post-cancel re-signup) → /billing/checkout.
+  //  - Upgrade/downgrade of an already-active subscription → /billing/change-plan.
+  // Going through /checkout in the second case mints a *second* Stripe
+  // Subscription and double-bills the customer — bug we just fixed.
+  const hasActiveSubscription =
+    currentPlanId !== 'free' && data?.subscription?.status === 'active';
+
+  const startFreshCheckout = useCallback(
+    (planId: PaidPlanId) => {
+      checkoutMutation.mutate(planId, {
+        onSuccess: ({ url, mode }) => {
+          if (mode === 'stub') {
+            // No real Stripe in stub mode — apply the change locally instead
+            // of round-tripping through `?stub_success=1`. The previous flow
+            // (full-document redirect + URL-driven useEffect) was prone to a
+            // mutation re-fire loop; calling stub-activate straight from the
+            // checkout response keeps it linear.
+            stubActivateMutation.mutate(planId, {
+              onSuccess: () => {
+                toast.success(`Switched to ${planId} (stub)`);
+                setBusyPlan(null);
+              },
+              onError: (err) => {
+                toast.error(getApiErrorMessage(err, 'Stub activation failed'));
+                setBusyPlan(null);
+              },
+            });
+            return;
+          }
+          // Live Stripe — full-document redirect (cross-origin, no SPA nav).
+          window.location.href = url;
+        },
+        onError: (err) => {
+          toast.error(getApiErrorMessage(err, 'Could not start checkout'));
+          setBusyPlan(null);
+        },
+      });
+    },
+    [checkoutMutation, stubActivateMutation],
+  );
 
   function onPlanChange(planId: PaidPlanId) {
     setBusyPlan(planId);
-    checkoutMutation.mutate(planId, {
-      onSuccess: ({ url, mode }) => {
-        if (mode === 'stub') {
-          // No real Stripe in stub mode — apply the change locally instead
-          // of round-tripping through `?stub_success=1`. The previous flow
-          // (full-document redirect + URL-driven useEffect) was prone to a
-          // mutation re-fire loop; calling stub-activate straight from the
-          // checkout response keeps it linear.
-          stubActivateMutation.mutate(planId, {
-            onSuccess: () => {
-              toast.success(`Switched to ${planId} (stub)`);
-              setBusyPlan(null);
-            },
-            onError: (err) => {
-              toast.error(getApiErrorMessage(err, 'Stub activation failed'));
-              setBusyPlan(null);
-            },
-          });
-          return;
+
+    if (!hasActiveSubscription) {
+      startFreshCheckout(planId);
+      return;
+    }
+
+    changePlanMutation.mutate(planId, {
+      onSuccess: ({ status }) => {
+        if (status === 'noop') {
+          toast.info(`You're already on ${planId}.`);
+        } else {
+          // Stripe accepted the price swap (or stub applied it). The webhook
+          // refresh lands a beat later — the mutation hook handles re-fetch.
+          toast.success(`Switched to ${planId}. Your plan will update shortly.`);
         }
-        // Live Stripe — full-document redirect (cross-origin, no SPA nav).
-        window.location.href = url;
+        setBusyPlan(null);
       },
       onError: (err) => {
-        toast.error(getApiErrorMessage(err, 'Could not start checkout'));
+        // Our DB and Stripe can disagree (e.g. sub was cancelled out-of-band).
+        // The server returns 409 NO_ACTIVE_SUBSCRIPTION; recover by starting
+        // a fresh checkout so the user still ends up on the plan they wanted.
+        if (err instanceof ApiError && err.code === 'NO_ACTIVE_SUBSCRIPTION') {
+          startFreshCheckout(planId);
+          return;
+        }
+        toast.error(getApiErrorMessage(err, 'Could not change plan'));
         setBusyPlan(null);
       },
     });

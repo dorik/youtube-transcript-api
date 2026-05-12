@@ -1,6 +1,7 @@
 export {
   useBillingOverviewQuery,
   useBillingSubscriptionQuery,
+  useChangePlanMutation,
   useCheckoutMutation,
   useStubActivateMutation,
 } from './billing.queries';

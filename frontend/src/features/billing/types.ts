@@ -25,3 +25,17 @@ export interface CheckoutResponse {
 export interface StubActivateResponse {
   ok: true;
 }
+
+/**
+ * `/billing/change-plan` response. Used for upgrades/downgrades of an
+ * already-active subscription — does NOT mint a new Stripe session, so
+ * there's no `url` to redirect to.
+ *
+ * - `changed`: Stripe accepted (or stub applied) the price swap; the
+ *   webhook will refresh our DB shortly.
+ * - `noop`: User is already on this plan, server skipped the call.
+ */
+export interface ChangePlanResponse {
+  status: 'changed' | 'noop';
+  mode?: 'stub' | 'live';
+}
