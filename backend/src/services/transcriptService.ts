@@ -185,17 +185,24 @@ export async function getTranscript(
 			cachedAt: new Date().toISOString(),
 		};
 
-		// Cache under the actual language; alias under the requested key when
-		// they differ so future 'auto' AND explicit lookups both hit.
+		// Cache under the actual language YouTube/Whisper gave us. Aliasing
+		// under the *requested* key is only safe when the user explicitly asked
+		// for 'auto' — that's a sentinel meaning "any language is fine", so a
+		// future 'auto' lookup should hit the same content. We deliberately do
+		// NOT alias when the user asked for an explicit code (e.g. 'es') but
+		// YouTube only had a different track ('bn'): writing the Bengali
+		// content under the 'es' key would poison that slot for 30 days and
+		// mask any future real Spanish caption from being fetched.
 		await setCached(original);
-		if (requestedLanguage !== actualLanguage) {
+		if (requestedLanguage === 'auto' && actualLanguage !== requestedLanguage) {
 			await setCached(original, requestedLanguage);
 		}
 	}
 
-	// 2. Decide whether to translate. Skip when target matches source — no
-	//    point spending an LLM call to translate Bangla to Bangla.
-	const shouldTranslate =
+	// 2. Decide whether the user wants a language different from what we have.
+	//    Skip when target matches source — no point spending an LLM call to
+	//    translate Bangla to Bangla.
+	const wantsDifferentLanguage =
 		translateTo !== null && translateTo !== original.language;
 
 	let displaySegments = original.segments;
@@ -203,13 +210,14 @@ export async function getTranscript(
 	let displayLanguage = original.language;
 	let translationStubbed: boolean | undefined;
 	let creditsForTranslation = 0;
-	let translationCacheHit = false;
+	// Tracks whether the response actually carries a translation (vs. real
+	// native captions in the target language). Drives `translated_to` and
+	// the Original ⇄ Translated toggle payload in the response.
+	let actuallyTranslated = false;
 
-	if (shouldTranslate) {
-		// Cache check first. Hit → no upstream call, no credit deduction — the
-		// user already paid for this translation the first time around and the
-		// text doesn't change. Miss falls through to the upstream + charge
-		// path below.
+	if (wantsDifferentLanguage) {
+		// 2a. Translation cache (cheapest path): the same original→target
+		//     translation was produced for a prior request. Reuse it for free.
 		const cachedTranslation = await getCachedTranslation(
 			videoId,
 			original.language,
@@ -222,62 +230,106 @@ export async function getTranscript(
 			// Cached output is necessarily a real (non-stubbed) translation:
 			// stubs are deliberately not written to the cache.
 			translationStubbed = false;
-			translationCacheHit = true;
+			actuallyTranslated = true;
 		} else {
-			// Pre-flight credit check, then translate, then charge +1 credit in
-			// its own transactional deduction so the user sees an accurate
-			// breakdown later.
-			const stateBeforeTrans = await getCreditState(input.userId);
-			if (stateBeforeTrans.balance < 1) {
-				throw new PaymentRequiredError(1, stateBeforeTrans.balance);
-			}
-
-			const translated = await translateSegments(
-				original.segments,
-				original.language,
-				translateTo!,
-			);
-			displaySegments = translated.segments;
-			displayTranscript = translated.fullText;
-			displayLanguage = translateTo!;
-			translationStubbed = !translated.real;
-
-			await deductCredits({
-				userId: input.userId,
-				amount: 1,
-				reason: 'transcript_translation',
+			// 2b. Before paying for machine translation, see if YouTube actually
+			//     has real captions in the target language. Native captions are
+			//     always going to be more accurate than translating from another
+			//     language — even when YouTube's auto-generated track is rough,
+			//     it's transcribed directly from the audio in that language and
+			//     beats a cascade of (other language → MT → target).
+			const nativeInTarget = await tryNativeInTargetLanguage(
 				videoId,
-				source: original.source,
-				metadata: {from: original.language, to: translateTo},
-			});
-			creditsForTranslation = 1;
+				translateTo!,
+				original,
+			);
 
-			// Only cache real translations. Stubbed output contains the
-			// `[src→tgt]` placeholder prefix and is intentionally low-quality;
-			// caching it would poison the table for 30 days even after
-			// STUB_TRANSLATION is turned off.
-			if (translated.real) {
-				// Fire-and-forget: the user already has their translation; we
-				// don't want a slow cache write to block the response.
-				void setCachedTranslation({
+			if (nativeInTarget) {
+				// Treat the native-target captions as the response's "original" —
+				// no translation happened, so the response's original_language,
+				// language and translated_to should all reflect that.
+				displaySegments = nativeInTarget.payload.segments;
+				displayTranscript = nativeInTarget.payload.transcript;
+				displayLanguage = nativeInTarget.payload.language;
+				original = nativeInTarget.payload;
+				actuallyTranslated = false;
+
+				if (!nativeInTarget.fromCache) {
+					// Fresh fetch: charge the same 1 credit a normal transcript
+					// fetch would cost. Total cost to the user (original fetch +
+					// this) ends up identical to (original fetch + translation),
+					// they just get higher-quality content.
+					const stateBeforeFetch = await getCreditState(input.userId);
+					if (stateBeforeFetch.balance < 1) {
+						throw new PaymentRequiredError(1, stateBeforeFetch.balance);
+					}
+					await deductCredits({
+						userId: input.userId,
+						amount: 1,
+						reason: 'transcript_fetch',
+						videoId,
+						source: 'native_captions',
+						durationSeconds: nativeInTarget.payload.durationSeconds,
+					});
+					creditsForTranslation = 1;
+				}
+			} else {
+				// 2c. YouTube doesn't have target-language captions. Fall back
+				//     to machine translation (OpenAI → Google → stub, handled
+				//     inside translateSegments).
+				const stateBeforeTrans = await getCreditState(input.userId);
+				if (stateBeforeTrans.balance < 1) {
+					throw new PaymentRequiredError(1, stateBeforeTrans.balance);
+				}
+
+				const translated = await translateSegments(
+					original.segments,
+					original.language,
+					translateTo!,
+				);
+				displaySegments = translated.segments;
+				displayTranscript = translated.fullText;
+				displayLanguage = translateTo!;
+				translationStubbed = !translated.real;
+				actuallyTranslated = true;
+
+				await deductCredits({
+					userId: input.userId,
+					amount: 1,
+					reason: 'transcript_translation',
 					videoId,
-					sourceLanguage: original.language,
-					targetLanguage: translateTo!,
-					transcript: translated.fullText,
-					segments: translated.segments,
-					translator: config.OPENAI_API_KEY ? 'openai' : 'google',
-					cachedAt: new Date().toISOString(),
-				}).catch((err) => {
-					logger.warn(
-						{
-							err,
-							videoId,
-							from: original.language,
-							to: translateTo,
-						},
-						'Failed to cache translation (non-fatal)',
-					);
+					source: original.source,
+					metadata: {from: original.language, to: translateTo},
 				});
+				creditsForTranslation = 1;
+
+				// Only cache real translations. Stubbed output contains the
+				// `[src→tgt]` placeholder prefix and is intentionally
+				// low-quality; caching it would poison the table for 30 days
+				// even after STUB_TRANSLATION is turned off.
+				if (translated.real) {
+					// Fire-and-forget: the user already has their translation;
+					// we don't want a slow cache write to block the response.
+					void setCachedTranslation({
+						videoId,
+						sourceLanguage: original.language,
+						targetLanguage: translateTo!,
+						transcript: translated.fullText,
+						segments: translated.segments,
+						translator: config.OPENAI_API_KEY ? 'openai' : 'google',
+						cachedAt: new Date().toISOString(),
+					}).catch((err) => {
+						logger.warn(
+							{
+								err,
+								videoId,
+								from: original.language,
+								to: translateTo,
+							},
+							'Failed to cache translation (non-fatal)',
+						);
+					});
+				}
 			}
 		}
 	}
@@ -293,22 +345,91 @@ export async function getTranscript(
 			segments: displaySegments,
 		},
 		format: input.format,
-		// True when this whole request was served without an upstream call:
-		// - original came from cache, and
-		// - either no translation was needed, or the translation came from cache too.
-		cached: originalCacheHit && (!shouldTranslate || translationCacheHit),
+		// True when nothing in this request triggered a fresh upstream call:
+		// - the original came from cache, AND
+		// - the target-language work (if any) was either skipped or served
+		//   from cache (translation cache, or native-in-target cache).
+		// `creditsForTranslation === 0` captures all the "no upstream for the
+		// target language" cases — fresh translation and fresh native fetch
+		// both deduct 1, cache hits leave it at 0.
+		cached: originalCacheHit && creditsForTranslation === 0,
 		creditsUsed: totalCreditsUsed,
 		creditsRemaining: finalState.balance,
 		displayLanguage,
 		originalLanguage: original.language,
-		translatedTo: shouldTranslate ? translateTo! : null,
+		// `translated_to` and the toggle payload are only meaningful when we
+		// actually machine-translated. When YouTube had real captions in the
+		// target language, we treat that as the response's native original.
+		translatedTo: actuallyTranslated ? translateTo! : null,
 		translationStubbed,
-		// When we translated, also include the untranslated content so the
-		// dashboard viewer can offer an instant Original ⇄ Translated toggle.
-		originalForToggle: shouldTranslate
+		originalForToggle: actuallyTranslated
 			? {transcript: original.transcript, segments: original.segments}
 			: null,
 	});
+}
+
+/**
+ * Try to satisfy a "different language wanted" request by sourcing native
+ * YouTube captions in the target language, instead of machine-translating
+ * from the cached original.
+ *
+ * Returns the target-language transcript when YouTube has a real track in
+ * that language (manual or auto-generated). Returns `null` when no such
+ * track exists or YouTube fell back to a different language — the caller
+ * should then translate the cached original.
+ *
+ * `UpstreamBlockedError` is re-thrown so the caller can surface YouTube's
+ * bot-challenge / rate-limit state cleanly instead of silently dropping
+ * to translation.
+ */
+async function tryNativeInTargetLanguage(
+	videoId: string,
+	targetLanguage: string,
+	originalForMetadata: CachedTranscript,
+): Promise<{payload: CachedTranscript; fromCache: boolean} | null> {
+	// Native cache hit on the target language: someone already fetched real
+	// captions in this language for this video. Serve them straight.
+	const cachedNative = await getCached(videoId, targetLanguage);
+	if (cachedNative && cachedNative.language === targetLanguage) {
+		return {payload: cachedNative, fromCache: true};
+	}
+
+	let result: Awaited<ReturnType<typeof fetchYouTubeCaptions>>;
+	try {
+		result = await fetchYouTubeCaptions(videoId, targetLanguage);
+	} catch (err) {
+		if (err instanceof UpstreamBlockedError) throw err;
+		logger.info(
+			{err, videoId, target: targetLanguage},
+			'No native captions in target language; will fall back to translation',
+		);
+		return null;
+	}
+
+	// `fetchYouTubeCaptions` falls back to "best alternative track" when the
+	// requested language doesn't exist. We can only count it as a native hit
+	// when the served track actually matches the language the user asked for.
+	if (result.language !== targetLanguage) {
+		logger.info(
+			{videoId, target: targetLanguage, served: result.language},
+			'YouTube has no track in target language; will fall back to translation',
+		);
+		return null;
+	}
+
+	const payload: CachedTranscript = {
+		videoId,
+		language: result.language,
+		title: originalForMetadata.title,
+		channel: originalForMetadata.channel,
+		durationSeconds: result.durationSeconds,
+		source: 'native_captions',
+		transcript: segmentsToPlainText(result.segments),
+		segments: result.segments,
+		cachedAt: new Date().toISOString(),
+	};
+	await setCached(payload);
+	return {payload, fromCache: false};
 }
 
 async function fetchTranscript(
