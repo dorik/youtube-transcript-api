@@ -2,6 +2,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import axios from 'axios';
 import {config} from '../config/env';
+import {proxyAxiosOptions} from '../config/proxy';
 import {logger} from '../config/logger';
 import {
 	NoTranscriptError,
@@ -333,6 +334,9 @@ async function fetchAndParseJson3(
 					return {};
 				}
 			},
+			// Route through PROXY_URL when set — Render's datacenter egress
+			// gets 429'd on this endpoint within minutes of traffic.
+			...proxyAxiosOptions(),
 		});
 		body = data ?? {};
 	} catch (err) {
@@ -506,7 +510,10 @@ export async function fetchYouTubeMetadata(
 ): Promise<YouTubeMetadata> {
 	try {
 		const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-		const {data} = await axios.get(url, {timeout: 8_000});
+		const {data} = await axios.get(url, {
+			timeout: 8_000,
+			...proxyAxiosOptions(),
+		});
 		return {
 			videoId,
 			title: typeof data.title === 'string' ? data.title : 'Untitled',

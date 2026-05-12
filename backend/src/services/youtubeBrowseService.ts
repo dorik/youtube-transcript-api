@@ -1,6 +1,5 @@
 import axios from 'axios';
-import { HttpsProxyAgent } from 'https-proxy-agent';
-import { config } from '../config/env';
+import { isProxyConfigured, proxyAxiosOptions } from '../config/proxy';
 import { logger } from '../config/logger';
 import { buildWatchUrl, extractVideoId } from '../utils/youtubeUrl';
 import { ValidationError } from '../utils/errors';
@@ -188,12 +187,11 @@ async function fetchInitialData(url: string): Promise<unknown> {
         'user-agent': USER_AGENT,
         'accept-language': 'en-US,en;q=0.9',
       },
-      proxy: false,
-      httpsAgent: config.PROXY_URL ? new HttpsProxyAgent(config.PROXY_URL) : undefined,
+      ...proxyAxiosOptions(),
     });
     return extractInitialData(data);
   } catch (err) {
-    logger.warn({ err, url, proxyConfigured: !!config.PROXY_URL }, 'YouTube browse fetch failed');
+    logger.warn({ err, url, proxyConfigured: isProxyConfigured() }, 'YouTube browse fetch failed');
     throw err;
   }
 }
@@ -220,8 +218,7 @@ async function fetchPlayerResponse(videoId: string): Promise<Record<string, unkn
       'user-agent': USER_AGENT,
       'accept-language': 'en-US,en;q=0.9',
     },
-    proxy: false,
-    httpsAgent: config.PROXY_URL ? new HttpsProxyAgent(config.PROXY_URL) : undefined,
+    ...proxyAxiosOptions(),
   });
   const marker = 'var ytInitialPlayerResponse = ';
   const start = data.indexOf(marker);
