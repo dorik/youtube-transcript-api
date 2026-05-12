@@ -108,12 +108,29 @@ export async function translateSegments(
   }
 
   if (config.STUB_TRANSLATION) {
+    logger.info(
+      { sourceLang, targetLang, reason: 'STUB_TRANSLATION=true' },
+      'Translator: using stub',
+    );
     return stubTranslate(segments, sourceLang, targetLang);
   }
 
   // Real mode. Prefer OpenAI when a key is available, otherwise use the
-  // free Google Translate fallback.
+  // free Google Translate fallback. We log the chosen path on entry so
+  // the cascade is visible from logs even when the primary succeeds —
+  // otherwise "did OpenAI run?" is unanswerable without timing-side
+  // signals.
   const useOpenAI = !!config.OPENAI_API_KEY;
+  logger.info(
+    {
+      sourceLang,
+      targetLang,
+      segmentCount: segments.length,
+      translator: useOpenAI ? 'openai' : 'google',
+      reason: useOpenAI ? 'OPENAI_API_KEY set' : 'OPENAI_API_KEY missing',
+    },
+    'Translator: primary attempt',
+  );
   try {
     return useOpenAI
       ? await openAITranslate(segments, sourceLang, targetLang)
@@ -127,6 +144,10 @@ export async function translateSegments(
     // before giving up. If we were already on Google, stub.
     if (useOpenAI) {
       try {
+        logger.info(
+          { sourceLang, targetLang },
+          'Translator: falling back from OpenAI to Google',
+        );
         return await googleTranslate(segments, sourceLang, targetLang);
       } catch (err2) {
         logger.error(

@@ -124,6 +124,13 @@ export async function getTranscript(
 			? input.translateTo.trim()
 			: null;
 
+	// Real OpenAI Whisper is a paid-only feature. We look this up once up
+	// front because it's needed by both the original-fetch path (cache miss
+	// below) and the translate-to native-Whisper attempt later. One small
+	// DB query buys us a clean signature on both code paths.
+	const subscription = await getUserSubscription(input.userId);
+	const allowRealWhisper = isPaidPlan(subscription?.plan_id);
+
 	// 1. Cache check for the ORIGINAL transcript. The user's request key is
 	//    used directly; explicit-language requests are served from a
 	//    per-language alias written after a fresh fetch.
@@ -143,12 +150,6 @@ export async function getTranscript(
 		if (stateBefore.balance < 1) {
 			throw new PaymentRequiredError(1, stateBefore.balance);
 		}
-
-		// Real OpenAI Whisper is a paid-only feature. Free users get the stub
-		// response instead so we don't burn OpenAI quota on accounts that
-		// haven't paid. Look up the plan once here and pipe the boolean down.
-		const subscription = await getUserSubscription(input.userId);
-		const allowRealWhisper = isPaidPlan(subscription?.plan_id);
 
 		const fetched = await fetchTranscript(
 			videoId,
@@ -242,6 +243,7 @@ export async function getTranscript(
 				videoId,
 				translateTo!,
 				original,
+				allowRealWhisper,
 			);
 
 			if (nativeInTarget) {
@@ -255,23 +257,32 @@ export async function getTranscript(
 				actuallyTranslated = false;
 
 				if (!nativeInTarget.fromCache) {
-					// Fresh fetch: charge the same 1 credit a normal transcript
-					// fetch would cost. Total cost to the user (original fetch +
-					// this) ends up identical to (original fetch + translation),
-					// they just get higher-quality content.
+					// Fresh fetch. Cost depends on source: native captions are
+					// flat 1 credit, Whisper bills per minute (Math.ceil of
+					// duration / 60, minimum 1) because we eat real OpenAI
+					// cost on long videos.
+					const cost =
+						nativeInTarget.payload.source === 'whisper'
+							? whisperCreditCost(
+									nativeInTarget.payload.durationSeconds,
+								)
+							: 1;
 					const stateBeforeFetch = await getCreditState(input.userId);
-					if (stateBeforeFetch.balance < 1) {
-						throw new PaymentRequiredError(1, stateBeforeFetch.balance);
+					if (stateBeforeFetch.balance < cost) {
+						throw new PaymentRequiredError(
+							cost,
+							stateBeforeFetch.balance,
+						);
 					}
 					await deductCredits({
 						userId: input.userId,
-						amount: 1,
+						amount: cost,
 						reason: 'transcript_fetch',
 						videoId,
-						source: 'native_captions',
+						source: nativeInTarget.payload.source,
 						durationSeconds: nativeInTarget.payload.durationSeconds,
 					});
-					creditsForTranslation = 1;
+					creditsForTranslation = cost;
 				}
 			} else {
 				// 2c. YouTube doesn't have target-language captions. Fall back
@@ -386,6 +397,7 @@ async function tryNativeInTargetLanguage(
 	videoId: string,
 	targetLanguage: string,
 	originalForMetadata: CachedTranscript,
+	allowRealWhisper: boolean,
 ): Promise<{payload: CachedTranscript; fromCache: boolean} | null> {
 	// Native cache hit on the target language: someone already fetched real
 	// captions in this language for this video. Serve them straight.
@@ -401,9 +413,20 @@ async function tryNativeInTargetLanguage(
 		if (err instanceof UpstreamBlockedError) throw err;
 		logger.info(
 			{err, videoId, target: targetLanguage},
-			'No native captions in target language; will fall back to translation',
+			'No YouTube captions in target language; trying Whisper before translation',
 		);
-		return null;
+		// Whisper is one rung above translation: if the audio itself is in
+		// the target language, Whisper produces a real native transcript
+		// rather than a machine-translated one. The `language` arg is a hint
+		// — Whisper still detects the spoken language, so we strict-match
+		// against `targetLanguage` afterwards. Mismatch (audio was in some
+		// other language) ⇒ return null, caller falls to translation.
+		return await tryWhisperInTargetLanguage(
+			videoId,
+			targetLanguage,
+			originalForMetadata,
+			allowRealWhisper,
+		);
 	}
 
 	// `fetchYouTubeCaptions` falls back to "best alternative track" when the
@@ -412,9 +435,14 @@ async function tryNativeInTargetLanguage(
 	if (result.language !== targetLanguage) {
 		logger.info(
 			{videoId, target: targetLanguage, served: result.language},
-			'YouTube has no track in target language; will fall back to translation',
+			'YouTube has no track in target language; trying Whisper before translation',
 		);
-		return null;
+		return await tryWhisperInTargetLanguage(
+			videoId,
+			targetLanguage,
+			originalForMetadata,
+			allowRealWhisper,
+		);
 	}
 
 	const payload: CachedTranscript = {
@@ -426,6 +454,60 @@ async function tryNativeInTargetLanguage(
 		source: 'native_captions',
 		transcript: segmentsToPlainText(result.segments),
 		segments: result.segments,
+		cachedAt: new Date().toISOString(),
+	};
+	await setCached(payload);
+	return {payload, fromCache: false};
+}
+
+/**
+ * Last chance to satisfy a target-language request without falling back to
+ * machine translation: ask Whisper to transcribe the audio. Useful when the
+ * video's spoken audio is in the requested language but YouTube didn't
+ * expose captions for it.
+ *
+ * Strict language match required — Whisper's `language` parameter is a hint,
+ * not a translation target. If the audio is in English and the user asked
+ * for Spanish, Whisper will likely return English text and `language: 'en'`;
+ * we reject that here and let the caller machine-translate from the cached
+ * original instead.
+ */
+async function tryWhisperInTargetLanguage(
+	videoId: string,
+	targetLanguage: string,
+	originalForMetadata: CachedTranscript,
+	allowRealWhisper: boolean,
+): Promise<{payload: CachedTranscript; fromCache: boolean} | null> {
+	let whisper: Awaited<ReturnType<typeof transcribeWithWhisper>>;
+	try {
+		whisper = await transcribeWithWhisper(videoId, targetLanguage, {
+			allowRealWhisper,
+		});
+	} catch (err) {
+		logger.info(
+			{err, videoId, target: targetLanguage},
+			'Whisper failed for target language; will fall back to translation',
+		);
+		return null;
+	}
+
+	if (whisper.language !== targetLanguage) {
+		logger.info(
+			{videoId, target: targetLanguage, whisperLang: whisper.language},
+			'Whisper detected a different language than target; will fall back to translation',
+		);
+		return null;
+	}
+
+	const payload: CachedTranscript = {
+		videoId,
+		language: whisper.language,
+		title: originalForMetadata.title,
+		channel: originalForMetadata.channel,
+		durationSeconds: whisper.durationSeconds,
+		source: 'whisper',
+		transcript: segmentsToPlainText(whisper.segments),
+		segments: whisper.segments,
 		cachedAt: new Date().toISOString(),
 	};
 	await setCached(payload);
