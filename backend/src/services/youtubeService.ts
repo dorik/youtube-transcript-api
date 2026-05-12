@@ -1,14 +1,14 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import axios from 'axios';
-import { config } from '../config/env';
-import { logger } from '../config/logger';
+import {config} from '../config/env';
+import {logger} from '../config/logger';
 import {
-  NoTranscriptError,
-  UpstreamBlockedError,
-  VideoNotFoundError,
+	NoTranscriptError,
+	UpstreamBlockedError,
+	VideoNotFoundError,
 } from '../utils/errors';
-import { Segment } from './formatters';
+import {Segment} from './formatters';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,18 +25,18 @@ const execFileAsync = promisify(execFile);
 const MAX_CONCURRENT_YTDLP = 3;
 
 export interface YouTubeFetchResult {
-  videoId: string;
-  segments: Segment[];
-  language: string;
-  durationSeconds: number;
-  source: 'native_captions';
+	videoId: string;
+	segments: Segment[];
+	language: string;
+	durationSeconds: number;
+	source: 'native_captions';
 }
 
 export interface YouTubeMetadata {
-  videoId: string;
-  title: string;
-  channel: string;
-  thumbnailUrl: string | null;
+	videoId: string;
+	title: string;
+	channel: string;
+	thumbnailUrl: string | null;
 }
 
 // ── yt-dlp output shapes ────────────────────────────────────────────────────
@@ -45,34 +45,34 @@ export interface YouTubeMetadata {
 // is discarded.
 
 interface YtDlpCaptionTrack {
-  ext: string;
-  url: string;
-  name?: string;
+	ext: string;
+	url: string;
+	name?: string;
 }
 
 interface YtDlpDump {
-  id: string;
-  duration?: number;
-  /** Manually authored caption tracks, keyed by language tag. */
-  subtitles?: Record<string, YtDlpCaptionTrack[]>;
-  /**
-   * Auto-generated tracks (Whisper-on-YouTube). Includes both the original
-   * recognised language (e.g. `en`, `en-orig`) AND auto-translated variants
-   * the YouTube UI offers (`en-fr`, `en-de`, ...). We deliberately skip the
-   * machine-translated variants — they're noisy and the user is better
-   * served by the genuine source-language track.
-   */
-  automatic_captions?: Record<string, YtDlpCaptionTrack[]>;
+	id: string;
+	duration?: number;
+	/** Manually authored caption tracks, keyed by language tag. */
+	subtitles?: Record<string, YtDlpCaptionTrack[]>;
+	/**
+	 * Auto-generated tracks (Whisper-on-YouTube). Includes both the original
+	 * recognised language (e.g. `en`, `en-orig`) AND auto-translated variants
+	 * the YouTube UI offers (`en-fr`, `en-de`, ...). We deliberately skip the
+	 * machine-translated variants — they're noisy and the user is better
+	 * served by the genuine source-language track.
+	 */
+	automatic_captions?: Record<string, YtDlpCaptionTrack[]>;
 }
 
 /** YouTube's `json3` timed-text format. */
 interface Json3Caption {
-  events?: Array<{
-    tStartMs?: number;
-    dDurationMs?: number;
-    /** Text fragments that get concatenated into the final caption text. */
-    segs?: Array<{ utf8?: string }>;
-  }>;
+	events?: Array<{
+		tStartMs?: number;
+		dDurationMs?: number;
+		/** Text fragments that get concatenated into the final caption text. */
+		segs?: Array<{utf8?: string}>;
+	}>;
 }
 
 /**
@@ -106,50 +106,57 @@ interface Json3Caption {
  *   or YT_COOKIES_PATH.
  */
 export async function fetchYouTubeCaptions(
-  videoId: string,
-  language?: string,
+	videoId: string,
+	language?: string,
 ): Promise<YouTubeFetchResult> {
-  const requestedLang =
-    language && language !== 'auto' && language.trim() ? language : undefined;
+	const requestedLang =
+		language && language !== 'auto' && language.trim()
+			? language
+			: undefined;
 
-  return runWithLimit(async () => {
-    const dump = await dumpVideoInfo(videoId);
-    const pick = pickCaptionTrack(dump, requestedLang);
-    if (!pick) {
-      throw new NoTranscriptError(videoId);
-    }
+	return runWithLimit(async () => {
+		const dump = await dumpVideoInfo(videoId);
+		const pick = pickCaptionTrack(dump, requestedLang);
+		if (!pick) {
+			throw new NoTranscriptError(videoId);
+		}
 
-    const segments = await fetchAndParseJson3(pick.url, videoId);
-    if (!segments.length) {
-      // yt-dlp gave us a caption URL but the body was empty / unparseable.
-      // Treat as if no transcript exists so the caller can fall back.
-      throw new NoTranscriptError(videoId);
-    }
+		const segments = await fetchAndParseJson3(pick.url, videoId);
+		if (!segments.length) {
+			// yt-dlp gave us a caption URL but the body was empty / unparseable.
+			// Treat as if no transcript exists so the caller can fall back.
+			throw new NoTranscriptError(videoId);
+		}
 
-    // Prefer the duration yt-dlp reported (precise, taken from the player
-    // config). Fall back to inferring from the last segment when the dump
-    // omits it (rare; happens for ongoing live streams).
-    const last = segments[segments.length - 1];
-    const durationSeconds =
-      typeof dump.duration === 'number' && dump.duration > 0
-        ? Math.ceil(dump.duration)
-        : Math.ceil(last.start + last.duration);
+		// Prefer the duration yt-dlp reported (precise, taken from the player
+		// config). Fall back to inferring from the last segment when the dump
+		// omits it (rare; happens for ongoing live streams).
+		const last = segments[segments.length - 1];
+		const durationSeconds =
+			typeof dump.duration === 'number' && dump.duration > 0
+				? Math.ceil(dump.duration)
+				: Math.ceil(last.start + last.duration);
 
-    if (requestedLang && pick.lang !== requestedLang) {
-      logger.info(
-        { videoId, requested: requestedLang, served: pick.lang, source: pick.source },
-        'Requested caption language unavailable; served best alternative track',
-      );
-    }
+		if (requestedLang && pick.lang !== requestedLang) {
+			logger.info(
+				{
+					videoId,
+					requested: requestedLang,
+					served: pick.lang,
+					source: pick.source,
+				},
+				'Requested caption language unavailable; served best alternative track',
+			);
+		}
 
-    return {
-      videoId,
-      segments,
-      language: pick.lang,
-      durationSeconds,
-      source: 'native_captions',
-    };
-  });
+		return {
+			videoId,
+			segments,
+			language: pick.lang,
+			durationSeconds,
+			source: 'native_captions',
+		};
+	});
 }
 
 /**
@@ -159,42 +166,42 @@ export async function fetchYouTubeCaptions(
  * yt-dlp. Typical wall time: 0.5–2s on a warm process.
  */
 async function dumpVideoInfo(videoId: string): Promise<YtDlpDump> {
-  const args = [
-    `https://www.youtube.com/watch?v=${videoId}`,
-    '--skip-download',
-    '--dump-single-json',
-    '--no-warnings',
-    // Defensive: a stray `&list=` in the URL would otherwise trigger a
-    // playlist walk we don't want.
-    '--no-playlist',
-    ...ytDlpNetworkArgs(),
-  ];
+	const args = [
+		`https://www.youtube.com/watch?v=${videoId}`,
+		'--skip-download',
+		'--dump-single-json',
+		'--no-warnings',
+		// Defensive: a stray `&list=` in the URL would otherwise trigger a
+		// playlist walk we don't want.
+		'--no-playlist',
+		...ytDlpNetworkArgs(),
+	];
 
-  let stdout: string;
-  try {
-    const result = await execFileAsync('yt-dlp', args, {
-      timeout: 30_000,
-      // The dump can be large for popular videos (hundreds of auto-translated
-      // caption entries, full chapter list, etc.). 50 MB is plenty.
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    stdout = result.stdout;
-  } catch (err) {
-    throw mapYtDlpError(err, videoId);
-  }
+	let stdout: string;
+	try {
+		const result = await execFileAsync('yt-dlp', args, {
+			timeout: 30_000,
+			// The dump can be large for popular videos (hundreds of auto-translated
+			// caption entries, full chapter list, etc.). 50 MB is plenty.
+			maxBuffer: 50 * 1024 * 1024,
+		});
+		stdout = result.stdout;
+	} catch (err) {
+		throw mapYtDlpError(err, videoId);
+	}
 
-  try {
-    return JSON.parse(stdout) as YtDlpDump;
-  } catch (err) {
-    logger.error({ err, videoId }, 'yt-dlp dump produced unparseable JSON');
-    throw new NoTranscriptError(videoId);
-  }
+	try {
+		return JSON.parse(stdout) as YtDlpDump;
+	} catch (err) {
+		logger.error({err, videoId}, 'yt-dlp dump produced unparseable JSON');
+		throw new NoTranscriptError(videoId);
+	}
 }
 
 interface PickedTrack {
-  lang: string;
-  url: string;
-  source: 'manual' | 'auto';
+	lang: string;
+	url: string;
+	source: 'manual' | 'auto';
 }
 
 /**
@@ -213,59 +220,60 @@ interface PickedTrack {
  * worse than serving the source-language track directly.
  */
 function pickCaptionTrack(
-  dump: YtDlpDump,
-  requestedLang: string | undefined,
+	dump: YtDlpDump,
+	requestedLang: string | undefined,
 ): PickedTrack | null {
-  const manual = dump.subtitles ?? {};
-  const auto = dump.automatic_captions ?? {};
+	const manual = dump.subtitles ?? {};
+	const auto = dump.automatic_captions ?? {};
 
-  return (
-    pickByLang(manual, requestedLang, 'manual') ??
-    pickByLang(auto, requestedLang, 'auto') ??
-    pickAny(manual, 'manual') ??
-    pickAny(auto, 'auto')
-  );
+	return (
+		pickByLang(manual, requestedLang, 'manual') ??
+		pickByLang(auto, requestedLang, 'auto') ??
+		pickAny(manual, 'manual') ??
+		pickAny(auto, 'auto')
+	);
 }
 
 function pickByLang(
-  catalog: Record<string, YtDlpCaptionTrack[]>,
-  lang: string | undefined,
-  source: 'manual' | 'auto',
+	catalog: Record<string, YtDlpCaptionTrack[]>,
+	lang: string | undefined,
+	source: 'manual' | 'auto',
 ): PickedTrack | null {
-  if (!lang) return null;
-  const keys = Object.keys(catalog);
+	if (!lang) return null;
+	const keys = Object.keys(catalog);
 
-  // Exact match wins (e.g. requested `en`, catalog has `en`).
-  const exact = keys.find((k) => k === lang);
-  if (exact) {
-    const url = trackUrl(catalog[exact]);
-    if (url) return { lang: exact, url, source };
-  }
+	// Exact match wins (e.g. requested `en`, catalog has `en`).
+	const exact = keys.find((k) => k === lang);
+	if (exact) {
+		const url = trackUrl(catalog[exact]);
+		if (url) return {lang: exact, url, source};
+	}
 
-  // Then a region-stripped match (e.g. requested `en`, catalog has `en-US`,
-  // or vice versa). Skip auto-translated variants when matching by prefix.
-  const requestedBase = lang.split(/[-_]/)[0];
-  const prefix = keys.find(
-    (k) => !isAutoTranslatedVariant(k) && k.split(/[-_]/)[0] === requestedBase,
-  );
-  if (prefix) {
-    const url = trackUrl(catalog[prefix]);
-    if (url) return { lang: prefix, url, source };
-  }
+	// Then a region-stripped match (e.g. requested `en`, catalog has `en-US`,
+	// or vice versa). Skip auto-translated variants when matching by prefix.
+	const requestedBase = lang.split(/[-_]/)[0];
+	const prefix = keys.find(
+		(k) =>
+			!isAutoTranslatedVariant(k) && k.split(/[-_]/)[0] === requestedBase,
+	);
+	if (prefix) {
+		const url = trackUrl(catalog[prefix]);
+		if (url) return {lang: prefix, url, source};
+	}
 
-  return null;
+	return null;
 }
 
 function pickAny(
-  catalog: Record<string, YtDlpCaptionTrack[]>,
-  source: 'manual' | 'auto',
+	catalog: Record<string, YtDlpCaptionTrack[]>,
+	source: 'manual' | 'auto',
 ): PickedTrack | null {
-  for (const [lang, tracks] of Object.entries(catalog)) {
-    if (isAutoTranslatedVariant(lang)) continue;
-    const url = trackUrl(tracks);
-    if (url) return { lang, url, source };
-  }
-  return null;
+	for (const [lang, tracks] of Object.entries(catalog)) {
+		if (isAutoTranslatedVariant(lang)) continue;
+		const url = trackUrl(tracks);
+		if (url) return {lang, url, source};
+	}
+	return null;
 }
 
 /**
@@ -276,7 +284,7 @@ function pickAny(
  * suffix, so neither is matched here.
  */
 function isAutoTranslatedVariant(lang: string): boolean {
-  return /^[a-z]{2}-[a-z]{2}$/.test(lang);
+	return /^[a-z]{2}-[a-z]{2}$/.test(lang);
 }
 
 /**
@@ -286,9 +294,9 @@ function isAutoTranslatedVariant(lang: string): boolean {
  * back to URL-rewriting in `fetchAndParseJson3`.
  */
 function trackUrl(tracks: YtDlpCaptionTrack[] | undefined): string | null {
-  if (!tracks?.length) return null;
-  const json3 = tracks.find((t) => t.ext === 'json3');
-  return (json3 ?? tracks[0]).url;
+	if (!tracks?.length) return null;
+	const json3 = tracks.find((t) => t.ext === 'json3');
+	return (json3 ?? tracks[0]).url;
 }
 
 /**
@@ -299,56 +307,60 @@ function trackUrl(tracks: YtDlpCaptionTrack[] | undefined): string | null {
  * parameters required by YouTube's timed-text service, so this is a plain
  * HTTPS GET — no further auth or extraction needed.
  */
-async function fetchAndParseJson3(url: string, videoId: string): Promise<Segment[]> {
-  // If the URL was for a non-json3 format, force json3 — the timed-text
-  // endpoint accepts `&fmt=json3` for any track, regardless of the format
-  // yt-dlp originally listed it under.
-  const u = new URL(url);
-  if (u.searchParams.get('fmt') !== 'json3') u.searchParams.set('fmt', 'json3');
+async function fetchAndParseJson3(
+	url: string,
+	videoId: string,
+): Promise<Segment[]> {
+	// If the URL was for a non-json3 format, force json3 — the timed-text
+	// endpoint accepts `&fmt=json3` for any track, regardless of the format
+	// yt-dlp originally listed it under.
+	const u = new URL(url);
+	if (u.searchParams.get('fmt') !== 'json3')
+		u.searchParams.set('fmt', 'json3');
 
-  let body: Json3Caption;
-  try {
-    const { data } = await axios.get<Json3Caption>(u.toString(), {
-      timeout: 12_000,
-      // YouTube serves json3 as text/plain occasionally; force the JSON
-      // parser so we don't end up with a string.
-      responseType: 'json',
-      transformResponse: (raw: unknown) => {
-        if (typeof raw !== 'string') return raw;
-        try {
-          return JSON.parse(raw);
-        } catch {
-          return {};
-        }
-      },
-    });
-    body = data ?? {};
-  } catch (err) {
-    logger.warn({ err, videoId }, 'Caption track fetch failed');
-    throw new NoTranscriptError(videoId);
-  }
+	let body: Json3Caption;
+	try {
+		const {data} = await axios.get<Json3Caption>(u.toString(), {
+			timeout: 12_000,
+			// YouTube serves json3 as text/plain occasionally; force the JSON
+			// parser so we don't end up with a string.
+			responseType: 'json',
+			transformResponse: (raw: unknown) => {
+				if (typeof raw !== 'string') return raw;
+				try {
+					return JSON.parse(raw);
+				} catch {
+					return {};
+				}
+			},
+		});
+		body = data ?? {};
+	} catch (err) {
+		logger.warn({err, videoId}, 'Caption track fetch failed');
+		throw new NoTranscriptError(videoId);
+	}
 
-  const events = body.events ?? [];
-  const segments: Segment[] = [];
-  for (const event of events) {
-    const text = (event.segs ?? [])
-      .map((s) => s.utf8 ?? '')
-      .join('')
-      // json3 caption events sometimes contain literal newlines as line
-      // breaks within a single phrase. Collapse them so downstream
-      // formatters don't accidentally insert paragraph breaks mid-segment.
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!text) continue;
-    segments.push({
-      start: (event.tStartMs ?? 0) / 1000,
-      // dDurationMs is occasionally missing on the very last event for live
-      // streams. A non-zero duration keeps SRT/VTT renderers happy.
-      duration: Math.max(0.001, (event.dDurationMs ?? 0) / 1000),
-      text,
-    });
-  }
-  return segments;
+	const events = body.events ?? [];
+	const segments: Segment[] = [];
+	for (const event of events) {
+		const text = (event.segs ?? [])
+			.map((s) => s.utf8 ?? '')
+			.join('')
+			// json3 caption events sometimes contain literal newlines as line
+			// breaks within a single phrase. Collapse them so downstream
+			// formatters don't accidentally insert paragraph breaks mid-segment.
+			.replace(/\s+/g, ' ')
+			.trim();
+		if (!text) continue;
+		segments.push({
+			start: (event.tStartMs ?? 0) / 1000,
+			// dDurationMs is occasionally missing on the very last event for live
+			// streams. A non-zero duration keeps SRT/VTT renderers happy.
+			duration: Math.max(0.001, (event.dDurationMs ?? 0) / 1000),
+			text,
+		});
+	}
+	return segments;
 }
 
 /**
@@ -359,17 +371,17 @@ async function fetchAndParseJson3(url: string, videoId: string): Promise<Segment
  * tying tests to module-import order.
  */
 export function ytDlpNetworkArgs(): string[] {
-  const args: string[] = [];
-  if (config.PROXY_URL) {
-    args.push('--proxy', config.PROXY_URL);
-  }
-  if (config.YT_COOKIES_PATH) {
-    // The only knob YouTube currently respects for "Sign in to confirm
-    // you're not a bot" without an IP rotation. Path must point at a
-    // Netscape-format cookies file the process can read.
-    args.push('--cookies', config.YT_COOKIES_PATH);
-  }
-  return args;
+	const args: string[] = [];
+	if (config.PROXY_URL) {
+		args.push('--proxy', config.PROXY_URL);
+	}
+	if (config.YT_COOKIES_PATH) {
+		// The only knob YouTube currently respects for "Sign in to confirm
+		// you're not a bot" without an IP rotation. Path must point at a
+		// Netscape-format cookies file the process can read.
+		args.push('--cookies', config.YT_COOKIES_PATH);
+	}
+	return args;
 }
 
 /**
@@ -383,48 +395,74 @@ export function ytDlpNetworkArgs(): string[] {
  * 'whisper-audio' so triage can tell which yt-dlp path failed.
  */
 export function mapYtDlpError(
-  err: unknown,
-  videoId: string,
-  context: 'captions' | 'whisper-audio' = 'captions',
+	err: unknown,
+	videoId: string,
+	context: 'captions' | 'whisper-audio' = 'captions',
 ): Error {
-  const stderr = isExecError(err) && typeof err.stderr === 'string' ? err.stderr : '';
-  const message = err instanceof Error ? err.message : String(err);
-  const blob = `${stderr}\n${message}`.toLowerCase();
+	const stderr =
+		isExecError(err) && typeof err.stderr === 'string' ? err.stderr : '';
+	const message = err instanceof Error ? err.message : String(err);
+	const blob = `${stderr}\n${message}`.toLowerCase();
 
-  if (
-    blob.includes('video unavailable') ||
-    blob.includes('private video') ||
-    blob.includes('removed by the uploader') ||
-    blob.includes('this video is not available') ||
-    blob.includes('does not exist')
-  ) {
-    return new VideoNotFoundError(videoId);
-  }
-  if (
-    blob.includes('http error 429') ||
-    blob.includes('too many requests') ||
-    // YouTube's anti-bot challenge — different wording across yt-dlp versions
-    // and YouTube locales. Both straight and curly apostrophes appear.
-    blob.includes("sign in to confirm you're not a bot") ||
-    blob.includes('sign in to confirm you’re not a bot') ||
-    blob.includes('sign in to confirm your age')
-  ) {
-    return new UpstreamBlockedError(60);
-  }
+	// Diagnostic: every yt-dlp failure (caption path + whisper-audio path)
+	// passes through here. The raw stderr is what YouTube literally
+	// returned, so this is the ground truth for "is YouTube blocking us
+	// or is our code misbehaving". Search Render logs for "billal" to
+	// pull these lines. `args` is intentionally NOT logged — when
+	// PROXY_URL is set it contains proxy credentials in plaintext.
+	logger.warn(
+		{
+			marker: 'billal',
+			videoId,
+			context,
+			blob,
+			proxyConfigured: Boolean(config.PROXY_URL),
+			cookiesConfigured: Boolean(config.YT_COOKIES_PATH),
+			exitCode: isExecError(err) ? err.code : undefined,
+			stderr: stderr.slice(0, 1500),
+			messageHead: message.slice(0, 300),
+		},
+		'billal: yt-dlp failed',
+	);
 
-  // Truncate stderr in the log line — yt-dlp can produce many KB of debug
-  // output and we only need the first error line for triage.
-  logger.warn(
-    { err, videoId, context, stderr: stderr.slice(0, 500) },
-    'yt-dlp call failed; treating as no-transcript',
-  );
-  return new NoTranscriptError(videoId);
+	if (
+		blob.includes('video unavailable') ||
+		blob.includes('private video') ||
+		blob.includes('removed by the uploader') ||
+		blob.includes('this video is not available') ||
+		blob.includes('does not exist')
+	) {
+		return new VideoNotFoundError(videoId);
+	}
+	if (
+		blob.includes('http error 429') ||
+		blob.includes('too many requests') ||
+		// YouTube's anti-bot challenge — different wording across yt-dlp versions
+		// and YouTube locales. Both straight and curly apostrophes appear.
+		blob.includes("sign in to confirm you're not a bot") ||
+		blob.includes('sign in to confirm you’re not a bot') ||
+		blob.includes('sign in to confirm your age')
+	) {
+		return new UpstreamBlockedError(60);
+	}
+
+	// Truncate stderr in the log line — yt-dlp can produce many KB of debug
+	// output and we only need the first error line for triage.
+	logger.warn(
+		{err, videoId, context, stderr: stderr.slice(0, 500)},
+		'yt-dlp call failed; treating as no-transcript',
+	);
+	return new NoTranscriptError(videoId);
 }
 
 function isExecError(
-  err: unknown,
-): err is { stderr?: string; stdout?: string; code?: number | string } {
-  return typeof err === 'object' && err !== null && ('stderr' in err || 'code' in err);
+	err: unknown,
+): err is {stderr?: string; stdout?: string; code?: number | string} {
+	return (
+		typeof err === 'object' &&
+		err !== null &&
+		('stderr' in err || 'code' in err)
+	);
 }
 
 // ── Concurrency limiter ─────────────────────────────────────────────────────
@@ -436,17 +474,17 @@ let activeYtDlp = 0;
 const ytDlpQueue: Array<() => void> = [];
 
 async function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
-  if (activeYtDlp >= MAX_CONCURRENT_YTDLP) {
-    await new Promise<void>((resolve) => ytDlpQueue.push(resolve));
-  }
-  activeYtDlp += 1;
-  try {
-    return await fn();
-  } finally {
-    activeYtDlp -= 1;
-    const next = ytDlpQueue.shift();
-    if (next) next();
-  }
+	if (activeYtDlp >= MAX_CONCURRENT_YTDLP) {
+		await new Promise<void>((resolve) => ytDlpQueue.push(resolve));
+	}
+	activeYtDlp += 1;
+	try {
+		return await fn();
+	} finally {
+		activeYtDlp -= 1;
+		const next = ytDlpQueue.shift();
+		if (next) next();
+	}
 }
 
 // ── Metadata ────────────────────────────────────────────────────────────────
@@ -464,24 +502,33 @@ async function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
  * callers in `youtubeBrowseService.ts`.
  */
 export async function fetchYouTubeMetadata(
-  videoId: string,
+	videoId: string,
 ): Promise<YouTubeMetadata> {
-  try {
-    const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-    const { data } = await axios.get(url, { timeout: 8_000 });
-    return {
-      videoId,
-      title: typeof data.title === 'string' ? data.title : 'Untitled',
-      channel: typeof data.author_name === 'string' ? data.author_name : 'Unknown',
-      thumbnailUrl: typeof data.thumbnail_url === 'string' ? data.thumbnail_url : null,
-    };
-  } catch (err) {
-    logger.warn({ err, videoId }, 'oEmbed metadata fetch failed; using placeholders');
-    return {
-      videoId,
-      title: 'Untitled',
-      channel: 'Unknown',
-      thumbnailUrl: null,
-    };
-  }
+	try {
+		const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+		const {data} = await axios.get(url, {timeout: 8_000});
+		return {
+			videoId,
+			title: typeof data.title === 'string' ? data.title : 'Untitled',
+			channel:
+				typeof data.author_name === 'string'
+					? data.author_name
+					: 'Unknown',
+			thumbnailUrl:
+				typeof data.thumbnail_url === 'string'
+					? data.thumbnail_url
+					: null,
+		};
+	} catch (err) {
+		logger.warn(
+			{err, videoId},
+			'oEmbed metadata fetch failed; using placeholders',
+		);
+		return {
+			videoId,
+			title: 'Untitled',
+			channel: 'Unknown',
+			thumbnailUrl: null,
+		};
+	}
 }
