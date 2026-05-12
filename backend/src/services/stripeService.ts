@@ -152,20 +152,37 @@ async function getStoredSubscription(userId: string): Promise<{
  * (b) left the original subscription active — so the customer would be
  * billed twice forever.
  *
- * Stripe defaults `proration_behavior` to `create_prorations`, which:
- *   - issues a credit line item for the unused portion of the old plan,
- *   - issues a charge line item for the new plan's prorated cost,
- *   - nets them out on the *next* invoice (no immediate card charge).
+ * Proration policy is split by direction of change:
+ *
+ *   - UPGRADE   (current price < new price):
+ *       proration_behavior = 'always_invoice'
+ *       payment_behavior   = 'error_if_incomplete'
+ *
+ *     Stripe generates an invoice for the prorated difference immediately
+ *     and attempts to charge the card. If the charge fails, the API call
+ *     errors and the subscription is NOT updated — clean rollback. This
+ *     matches standard SaaS upgrade UX (click upgrade → card charged now).
+ *
+ *   - DOWNGRADE (current price > new price):
+ *       proration_behavior = 'create_prorations'
+ *
+ *     Stripe credits the unused portion of the old plan to the customer
+ *     balance; future invoices eat that credit. No immediate card charge.
+ *     Customer is made whole over the next few cycles instead of seeing
+ *     a confusing partial refund.
+ *
+ *   - UNKNOWN current plan → fall back to 'create_prorations' (safer:
+ *     never surprise-charge if we can't tell the direction).
  *
  * The customer.subscription.updated webhook fires right after this call;
- * our handler (handleSubscriptionUpdated) turns that into an
- * applyPlanUpgrade that updates our DB and refills credits. So we do NOT
- * touch our DB here — webhook stays the single source of truth and we
- * avoid double-allocating credits.
+ * handleSubscriptionUpdated turns that into applyPlanUpgrade which updates
+ * our DB and refills credits. So we do NOT touch our DB here — webhook
+ * stays the single source of truth and we avoid double-allocating credits.
  */
 async function updateSubscriptionPlan(opts: {
 	userId: string;
 	stripeSubscriptionId: string;
+	currentPlan: PlanId | null;
 	plan: PlanId;
 }): Promise<void> {
 	if (opts.plan === 'free') {
@@ -192,9 +209,21 @@ async function updateSubscriptionPlan(opts: {
 			`Subscription ${opts.stripeSubscriptionId} has no items to update`,
 		);
 	}
+
+	const isUpgrade =
+		opts.currentPlan !== null &&
+		PLANS[opts.plan].price > PLANS[opts.currentPlan].price;
+
 	await stripe.subscriptions.update(opts.stripeSubscriptionId, {
 		items: [{id: currentItemId, price: priceId}],
-		proration_behavior: 'create_prorations',
+		proration_behavior: isUpgrade ? 'always_invoice' : 'create_prorations',
+		// Only relevant on upgrade: if the immediate invoice can't be paid,
+		// roll the whole update back so the customer doesn't get the new plan
+		// for free. Downgrades have no immediate charge, so this would only
+		// add noise.
+		...(isUpgrade
+			? {payment_behavior: 'error_if_incomplete' as const}
+			: {}),
 		metadata: {user_id: opts.userId, plan: opts.plan},
 	});
 }
@@ -256,6 +285,7 @@ export async function changeSubscriptionPlan(opts: {
 	await updateSubscriptionPlan({
 		userId: opts.userId,
 		stripeSubscriptionId: stored!.stripeSubscriptionId!,
+		currentPlan: stored!.planId,
 		plan: opts.plan,
 	});
 	return {status: 'changed', mode: 'live'};
