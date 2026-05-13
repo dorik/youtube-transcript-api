@@ -82,7 +82,6 @@ export function ResultsCard({
           {active?.ok && active.data?.translated_to && (
             <Badge variant="default" className="bg-blue-600 hover:bg-blue-600">
               {active.data.original_language} → {active.data.translated_to}
-              {active.data.translation_stubbed ? ' (stub)' : ''}
             </Badge>
           )}
           {copyTextForActive && (

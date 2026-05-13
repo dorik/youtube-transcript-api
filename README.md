@@ -5,7 +5,7 @@ A REST API + dashboard for YouTube video transcripts. Send a YouTube URL, get ba
 - **Backend:** Node.js + Express + TypeScript
 - **Frontend:** Next.js 14 + Tailwind + shadcn/ui
 - **DB / Cache:** PostgreSQL (Neon or Docker) + Redis
-- **External (stubbed):** Stripe, OpenAI Whisper, residential proxies
+- **External:** Stripe, OpenAI Whisper, residential proxies (real services — no stub mode)
 
 ---
 
@@ -54,15 +54,21 @@ curl 'http://localhost:3001/v1/transcript?url=https://youtu.be/dQw4w9WgXcQ' \
 
 ---
 
-## Stub flags
+## External services
 
-External paid services are stubbed for local development. Flip these to `false` in `backend/.env` when you have the credentials.
+There is no stub mode. The backend talks to real Stripe, real OpenAI, and the
+real outbound proxy. Each integration's failure mode is a hard error (HTTP 4xx
+/ 5xx) rather than a fake response.
 
-| Flag | What stubbing does | Real mode requires |
+| Integration | Env vars | What breaks without them |
 |---|---|---|
-| `STUB_STRIPE` | Checkout returns a fake redirect; `/billing/stub-activate` upgrades the user locally; webhooks no-op | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_*` |
-| `STUB_WHISPER` | Whisper returns canned 30-second transcripts | `OPENAI_API_KEY`, `yt-dlp` and `ffmpeg` installed (`brew install yt-dlp ffmpeg`) |
-| `STUB_PROXY` | YouTube fetches go through plain Node fetch (your IP) | `PROXY_URL` for residential proxy provider (Bright Data, Smartproxy, Webshare) |
+| Stripe | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID_*` | Checkout / change-plan / webhooks all 500 |
+| OpenAI Whisper | `OPENAI_API_KEY` (plus `yt-dlp`, `ffmpeg` on PATH) | Free-plan users always rejected with `UPGRADE_REQUIRED` (no Whisper for them anyway); paid users see a 500 when no native captions exist |
+| Translation | `OPENAI_API_KEY` (preferred; falls back to free `google-translate-api-x`) | Translation requests propagate the upstream error |
+| Outbound proxy | `PROXY_URL` | YouTube fetches from datacenter IPs get rate-limited / bot-walled |
+
+Free-plan users hitting Whisper get HTTP 402 `UPGRADE_REQUIRED` — Whisper is
+a paid-plan feature.
 
 ---
 
@@ -87,8 +93,8 @@ External paid services are stubbed for local development. Flip these to `false` 
 - `GET /me/usage` — totals, by-source breakdown, daily histogram, recent requests
 
 ### Billing
-- `POST /billing/checkout` `{ plan }` — returns Stripe (or stub) URL
-- `POST /billing/stub-activate` `{ plan }` — local-only upgrade in stub mode
+- `POST /billing/checkout` `{ plan }` — returns Stripe Checkout URL
+- `POST /billing/change-plan` `{ plan }` — swap an active subscription
 - `POST /webhooks/stripe` — Stripe webhook receiver
 
 ### Transcripts (Bearer API key auth)
@@ -109,10 +115,10 @@ backend/
 │   ├── services/                 # business logic
 │   │   ├── transcriptService.ts  # orchestrator (cache → fetch → Whisper → credits)
 │   │   ├── youtubeService.ts     # native captions via yt-dlp
-│   │   ├── whisperService.ts     # Whisper (real + stub)
+│   │   ├── whisperService.ts     # Whisper (paid-plan only)
 │   │   ├── cacheService.ts       # Redis + Postgres two-tier
 │   │   ├── creditService.ts      # transactional credit deductions
-│   │   ├── stripeService.ts      # checkout + webhook dispatch (real + stub)
+│   │   ├── stripeService.ts      # checkout + webhook dispatch
 │   │   └── formatters.ts         # JSON / text / SRT / VTT
 │   ├── routes/                   # Express routers (auth, transcript, billing, …)
 │   └── utils/                    # youtubeUrl, errors, password
@@ -165,7 +171,7 @@ npm run lint
 | B — DB pool, migrations, Redis, config, error handling, health | ✅ |
 | C — Auth (signup, login, sessions, API keys, middleware) | ✅ |
 | D — Transcript pipeline (URL parser, formatters, YouTube, Whisper, cache, credits, `/v1/transcript`) | ✅ |
-| E — Billing + dashboard APIs (Stripe stub-aware, `/me/usage`, `/me/subscription`) | ✅ |
+| E — Billing + dashboard APIs (Stripe, `/me/usage`, `/me/subscription`) | ✅ |
 | F — Marketing site (landing, pricing) | ✅ |
 | G — Auth pages (signup, login, typed API client) | ✅ |
 | H — Dashboard (overview, api-keys, usage, billing) | ✅ |
@@ -181,5 +187,5 @@ Phase 2 (search, channel, playlist, MCP server, SDKs) is intentionally out of sc
 - **Cookie session ports:** Both apps use `localhost`, so the JWT cookie's `path=/` works across `:3000` (frontend) and `:3001` (backend) without subdomain or SameSite gymnastics. In production you'll want both on the same eTLD (e.g. `app.youtubetranscripts.co` and `api.youtubetranscripts.co`).
 - **API key plaintext is shown once.** The hash is sha256 in `api_keys.key_hash`; we never store the raw token.
 - **Cache is two-tier:** Redis is the hot path (30-day TTL); Postgres `cached_transcripts` is the durable backup. Cleanup of expired Postgres rows is left to a scheduled job (not yet implemented; safe to leave for low volume).
-- **Whisper stub returns 30-second canned segments**, enough to exercise credit math (1 credit) and SRT/VTT formatters.
-- **Stripe stub flow:** `Upgrade` button → `/billing/checkout` returns `/dashboard/billing?stub_success=1&plan=pro` → that page calls `/billing/stub-activate` to set the plan and reset credits. Live mode just redirects to Stripe.
+- **Whisper requires a paid plan.** Free-plan callers get HTTP 402 `UPGRADE_REQUIRED`; the route is gated in `transcribeWithWhisper` via the per-request `allowRealWhisper` flag.
+- **Billing flow:** `Upgrade` button → `/billing/checkout` returns a real Stripe Checkout URL → user pays → webhook (`/webhooks/stripe`) lands and `applyPlanUpgrade` flips the plan + refills credits. Plan switches on existing subscriptions go through `/billing/change-plan` (avoids minting a second Subscription and double-billing).

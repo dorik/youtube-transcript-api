@@ -3,9 +3,9 @@ import { z } from 'zod';
 /**
  * Environment configuration. Loaded once at startup; throws if invalid.
  *
- * `STUB_*` flags toggle real vs. stub implementations of external services.
- * When true, the corresponding service uses a fake/canned response so we can
- * develop end-to-end without paying for / configuring third-party APIs.
+ * External services (Stripe, OpenAI/Whisper, translation, proxy) are always
+ * real. The keys below are required for those features to function; absence
+ * causes a hard failure at the call site rather than a fake response.
  */
 const EnvSchema = z.object({
   PORT: z.coerce.number().default(3001),
@@ -23,23 +23,6 @@ const EnvSchema = z.object({
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 chars'),
   JWT_COOKIE_NAME: z.string().default('yt_session'),
   JWT_EXPIRES_IN: z.string().default('7d'),
-
-  STUB_STRIPE: z
-    .string()
-    .default('true')
-    .transform((v) => v === 'true'),
-  STUB_WHISPER: z
-    .string()
-    .default('true')
-    .transform((v) => v === 'true'),
-  STUB_PROXY: z
-    .string()
-    .default('true')
-    .transform((v) => v === 'true'),
-  STUB_TRANSLATION: z
-    .string()
-    .default('true')
-    .transform((v) => v === 'true'),
 
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),

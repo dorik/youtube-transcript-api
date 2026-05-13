@@ -21,8 +21,8 @@ let cachedFor: string | undefined;
 
 /**
  * Return the shared `HttpsProxyAgent`, or `undefined` when `PROXY_URL` isn't
- * set (dev / stub mode). Caches by URL so a runtime env change in tests
- * doesn't return a stale agent.
+ * set. Caches by URL so a runtime env change in tests doesn't return a stale
+ * agent.
  */
 export function getProxyAgent(): HttpsProxyAgent<string> | undefined {
 	if (!config.PROXY_URL) return undefined;

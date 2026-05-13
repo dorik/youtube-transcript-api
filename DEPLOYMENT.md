@@ -36,9 +36,9 @@ backend's `FRONTEND_URL`.
      <https://console.neon.tech> → your project → Dashboard → Connection string.
    - **`FRONTEND_URL`** — leave blank for now. We'll come back to it after
      Vercel is up.
-   - The Stripe / OpenAI / Proxy fields can stay empty — the corresponding
-     `STUB_*` flags are still `true`, so the service runs in stub mode for
-     those providers.
+   - The Stripe / OpenAI / Proxy fields are required for the corresponding
+     features to work (billing, Whisper, YouTube fetches in production).
+     Set them now or expect 5xx errors when those code paths run.
 6. Click **Apply**. Render runs:
    - `npm install --include=dev && npm run build` (compiles TS → JS, copies
      migrations into `dist/`)
@@ -110,17 +110,16 @@ domain probably failed. Check that:
 
 ---
 
-## 4. Promoting from stub to live mode
+## 4. External-service env vars
 
-Each external integration is gated behind a `STUB_*` flag. Flip them in
-the Render env vars when you're ready:
+There is no stub mode — each integration calls the real service. Set the
+credentials below in the Render env vars when you're ready:
 
-| Flag | What flips it on |
+| Env var(s) | What turns on |
 |---|---|
-| `STUB_STRIPE=false` | Real Stripe billing. Also fill `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and the three `STRIPE_PRICE_ID_*`. Add a webhook endpoint in Stripe dashboard pointing at `https://yt-transcripts-api.onrender.com/webhooks/stripe`. |
-| `STUB_WHISPER=false` | OpenAI Whisper for videos without native captions. Fill `OPENAI_API_KEY` and ensure `yt-dlp` + `ffmpeg` are available — Render's default Node runtime doesn't include them, so you'll need a `Dockerfile` if you go this route on Render. (Fly.io or a custom image is easier.) |
-| `STUB_TRANSLATION=false` | Already `false` by default in `render.yaml`. With no `OPENAI_API_KEY` it falls back to the free `google-translate-api-x`. With one set, OpenAI runs (better quality). |
-| `STUB_PROXY=false` | Use a residential proxy provider for YouTube fetches. Fill `PROXY_URL` (e.g. `http://user:pass@proxy.provider.com:8080`). |
+| `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` + `STRIPE_PRICE_ID_*` | Real Stripe billing. Add a webhook endpoint in the Stripe dashboard pointing at `https://yt-transcripts-api.onrender.com/webhooks/stripe`. |
+| `OPENAI_API_KEY` | OpenAI Whisper for videos without native captions (paid-plan-only feature). `yt-dlp` + `ffmpeg` are installed at build time by `render.yaml`. Also used for higher-quality translation; absent → translation falls back to free `google-translate-api-x`. |
+| `PROXY_URL` | Residential proxy for YouTube fetches (e.g. `http://user:pass@proxy.provider.com:8080`). Required in production — Render's datacenter IPs get bot-walled by YouTube without one. |
 
 ---
 

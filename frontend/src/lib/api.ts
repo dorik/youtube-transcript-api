@@ -181,8 +181,6 @@ export interface TranscriptResponse {
   original_language: string;
   /** Set when a translation was applied; null otherwise. */
   translated_to: string | null;
-  /** True when translation fell back to the stub. */
-  translation_stubbed?: boolean;
   source: 'native_captions' | 'whisper';
   format: string;
   transcript: string;
@@ -227,12 +225,7 @@ export const billing = {
   subscription: () =>
     api<{ subscription: Subscription | null; credits: CreditState }>('/billing/subscription'),
   checkout: (plan: 'starter' | 'pro' | 'business') =>
-    api<{ url: string; mode: 'stub' | 'live' }>('/billing/checkout', {
-      method: 'POST',
-      body: { plan },
-    }),
-  stubActivate: (plan: 'starter' | 'pro' | 'business') =>
-    api<{ ok: true }>('/billing/stub-activate', {
+    api<{ url: string }>('/billing/checkout', {
       method: 'POST',
       body: { plan },
     }),

@@ -69,6 +69,27 @@ export class PaymentRequiredError extends ApiError {
   }
 }
 
+/**
+ * The caller's plan does not include the feature they're invoking. Distinct
+ * from `PaymentRequiredError` (which means "you've used up your credits") —
+ * an upgrade is required regardless of credit balance. Currently thrown when
+ * a free-plan user needs the Whisper fallback (no native captions exist for
+ * the video, so we can't serve them anything without spending OpenAI quota).
+ *
+ * `context` is an optional preceding sentence — used to explain *why* the
+ * feature got invoked (e.g. "No native captions are available for this
+ * video.") so the message reads as a coherent failure-plus-remedy rather
+ * than a bare "upgrade required".
+ */
+export class UpgradeRequiredError extends ApiError {
+  constructor(feature: string, context?: string) {
+    const message = context
+      ? `${context} Upgrade your plan to use ${feature}.`
+      : `${feature} is only available on paid plans. Upgrade to continue.`;
+    super(402, 'UPGRADE_REQUIRED', 'upgrade_required', message, { feature });
+  }
+}
+
 export class RateLimitError extends ApiError {
   constructor(retryAfterSeconds: number) {
     super(

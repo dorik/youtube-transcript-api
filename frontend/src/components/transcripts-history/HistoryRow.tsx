@@ -52,15 +52,7 @@ export const HistoryRow = memo(function HistoryRow({ item }: { item: HistoryItem
               )}
               {item.last_source && (
                 <Badge variant="secondary" className="text-[10px]">
-                  {item.last_source === 'whisper' ? 'whisper' : 'native'}
-                </Badge>
-              )}
-              {item.last_cache_hit ? (
-                <Badge variant="secondary" className="text-[10px]">cached</Badge>
-              ) : null}
-              {item.last_credits_used != null && item.last_credits_used > 0 && (
-                <Badge variant="outline" className="text-[10px]">
-                  {item.last_credits_used} credits
+                  {item.last_source === 'whisper' ? 'OpenAI' : 'native'}
                 </Badge>
               )}
             </div>

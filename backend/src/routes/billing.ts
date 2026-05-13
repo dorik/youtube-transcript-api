@@ -3,14 +3,11 @@ import { z } from 'zod';
 import { sessionAuth } from '../middleware/sessionAuth';
 import {
   PLANS,
-  PlanId,
-  applyPlanUpgrade,
   changeSubscriptionPlan,
   createCheckoutSession,
   getUserSubscription,
 } from '../services/stripeService';
 import { getCreditState } from '../services/creditService';
-import { config } from '../config/env';
 import { ValidationError } from '../utils/errors';
 
 /**
@@ -54,12 +51,12 @@ billingRouter.post('/checkout', sessionAuth, async (req, res, next) => {
     if (!parsed.success) {
       throw new ValidationError('Invalid plan', { issues: parsed.error.flatten().fieldErrors });
     }
-    const { url, mode } = await createCheckoutSession({
+    const { url } = await createCheckoutSession({
       userId: req.user!.id,
       email: req.user!.email,
       plan: parsed.data.plan,
     });
-    res.json({ url, mode });
+    res.json({ url });
   } catch (err) {
     next(err);
   }
@@ -71,7 +68,7 @@ billingRouter.post('/checkout', sessionAuth, async (req, res, next) => {
  * and double-bill the customer.
  *
  * Returns:
- *   200 {status:'changed', mode}        — Stripe (or stub) accepted the plan switch.
+ *   200 {status:'changed'}               — Stripe accepted the plan switch.
  *                                          Webhook will refill credits / update DB.
  *   200 {status:'noop'}                  — User is already on this plan.
  *   409 {code:'NO_ACTIVE_SUBSCRIPTION'}  — User has no active subscription;
@@ -101,42 +98,7 @@ billingRouter.post('/change-plan', sessionAuth, async (req, res, next) => {
     if (outcome.status === 'noop') {
       return res.json({ status: 'noop' });
     }
-    res.json({ status: 'changed', mode: outcome.mode });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * Stub-only endpoint: the dashboard's "billing success" page calls this when
- * `stub_success=1` is in the URL. It mirrors what a real Stripe webhook
- * would do — flip the user to the chosen plan.
- *
- * In live mode (STUB_STRIPE=false) this is a no-op so nobody can self-grant
- * a Pro plan.
- */
-const StubActivateSchema = z.object({
-  plan: z.enum(['starter', 'pro', 'business']),
-});
-
-billingRouter.post('/stub-activate', sessionAuth, async (req, res, next) => {
-  try {
-    if (!config.STUB_STRIPE) {
-      return res.status(404).json({ error: 'not_found', code: 'NOT_AVAILABLE', message: 'Stub activation is disabled in production billing mode.' });
-    }
-    const parsed = StubActivateSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new ValidationError('Invalid plan', { issues: parsed.error.flatten().fieldErrors });
-    }
-    await applyPlanUpgrade({
-      userId: req.user!.id,
-      plan: parsed.data.plan as PlanId,
-      // Deterministic so re-clicking the success page doesn't litter
-      // `billing_events` with duplicate audit rows. The subscription/credits
-      // upsert in `applyPlanUpgrade` still runs either way.
-      stripeEventId: `stub_${req.user!.id}_${parsed.data.plan}`,
-    });
-    res.json({ ok: true });
+    res.json({ status: 'changed' });
   } catch (err) {
     next(err);
   }

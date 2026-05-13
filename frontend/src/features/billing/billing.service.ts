@@ -8,7 +8,6 @@ import type {
   ChangePlanResponse,
   CheckoutResponse,
   PaidPlanId,
-  StubActivateResponse,
 } from './types';
 
 function getPlansQuery() {
@@ -28,14 +27,6 @@ function getBillingSubscriptionQuery() {
 function startCheckoutQuery(plan: PaidPlanId) {
   return {
     url: '/billing/checkout',
-    method: methodsEnums.POST,
-    data: { plan },
-  };
-}
-
-function activateStubPlanQuery(plan: PaidPlanId) {
-  return {
-    url: '/billing/stub-activate',
     method: methodsEnums.POST,
     data: { plan },
   };
@@ -75,11 +66,6 @@ export async function getBillingOverview(): Promise<BillingOverviewResponse> {
 export const startCheckout = createApi<PaidPlanId, CheckoutResponse>({
   queryFn: apiClient,
   query: startCheckoutQuery,
-});
-
-export const activateStubPlan = createApi<PaidPlanId, StubActivateResponse>({
-  queryFn: apiClient,
-  query: activateStubPlanQuery,
 });
 
 export const changeSubscriptionPlan = createApi<PaidPlanId, ChangePlanResponse>({

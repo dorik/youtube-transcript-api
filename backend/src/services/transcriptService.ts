@@ -1,6 +1,6 @@
 import {extractVideoId, buildWatchUrl} from '../utils/youtubeUrl';
 import {fetchYouTubeCaptions, fetchYouTubeMetadata} from './youtubeService';
-import {transcribeWithWhisper, whisperCreditCost} from './whisperService';
+import {transcribeWithWhisper} from './whisperService';
 import {
 	getCached,
 	setCached,
@@ -23,6 +23,7 @@ import {
 	ApiError,
 	NoTranscriptError,
 	PaymentRequiredError,
+	UpgradeRequiredError,
 	UpstreamBlockedError,
 	ValidationError,
 } from '../utils/errors';
@@ -45,8 +46,6 @@ export interface TranscriptResponse {
 	original_language: string;
 	/** Target language if a translation was applied; otherwise null. */
 	translated_to: string | null;
-	/** True when we had to use the stub translator (no real OpenAI call). */
-	translation_stubbed?: boolean;
 	source: 'native_captions' | 'whisper';
 	format: OutputFormat;
 	/**
@@ -97,8 +96,7 @@ export interface GetTranscriptInput {
  *  3. If `translate_to` is set and differs from the original language,
  *     check the translation cache. Hit → reuse translated segments, no
  *     credit deducted. Miss → translate the segments, charge +1 credit,
- *     and (if the translator was real, not the stub) write the result
- *     back to the cache so the next caller skips both.
+ *     and write the result back to the cache so the next caller skips both.
  *  4. Format the response (JSON / text / SRT / VTT / text-timestamps).
  */
 export async function getTranscript(
@@ -134,18 +132,22 @@ export async function getTranscript(
 	// 1. Cache check for the ORIGINAL transcript. The user's request key is
 	//    used directly; explicit-language requests are served from a
 	//    per-language alias written after a fresh fetch.
+	//
+	// Billing policy: one HTTP request → at most 1 credit deducted, ever.
+	// Multiple internal operations (Whisper, native-in-target, MT) all
+	// coalesce into a single 1-credit charge at the end of this function.
+	// Pure cache paths (original + translation both cached) cost 0.
 	let original: CachedTranscript;
-	let originalCacheHit = false;
-	let creditsForOriginal = 0;
+	let didFreshWork = false;
 
 	const cached = await getCached(videoId, requestedLanguage);
 	if (cached) {
 		original = cached;
-		originalCacheHit = true;
 	} else {
-		// Pre-flight credit check (ballpark: 1 credit). Whisper re-checks based
-		// on duration — credit deduction itself is transactional and throws if
-		// the user can't afford it.
+		// Pre-flight check: refuse upstream work for a user who can't pay even
+		// 1 credit. The transactional deductCredits at the end is the real
+		// guard; this just avoids burning a YouTube fetch / Whisper call for a
+		// 0-credit user.
 		const stateBefore = await getCreditState(input.userId);
 		if (stateBefore.balance < 1) {
 			throw new PaymentRequiredError(1, stateBefore.balance);
@@ -158,20 +160,7 @@ export async function getTranscript(
 			allowRealWhisper,
 		);
 		const metadata = await fetchYouTubeMetadata(videoId);
-
-		creditsForOriginal =
-			fetched.source === 'whisper'
-				? whisperCreditCost(fetched.durationSeconds)
-				: 1;
-
-		await deductCredits({
-			userId: input.userId,
-			amount: creditsForOriginal,
-			reason: 'transcript_fetch',
-			videoId,
-			source: fetched.source,
-			durationSeconds: fetched.durationSeconds,
-		});
+		didFreshWork = true;
 
 		const actualLanguage = fetched.language || requestedLanguage;
 		original = {
@@ -195,7 +184,10 @@ export async function getTranscript(
 		// content under the 'es' key would poison that slot for 30 days and
 		// mask any future real Spanish caption from being fetched.
 		await setCached(original);
-		if (requestedLanguage === 'auto' && actualLanguage !== requestedLanguage) {
+		if (
+			requestedLanguage === 'auto' &&
+			actualLanguage !== requestedLanguage
+		) {
 			await setCached(original, requestedLanguage);
 		}
 	}
@@ -209,8 +201,6 @@ export async function getTranscript(
 	let displaySegments = original.segments;
 	let displayTranscript = original.transcript;
 	let displayLanguage = original.language;
-	let translationStubbed: boolean | undefined;
-	let creditsForTranslation = 0;
 	// Tracks whether the response actually carries a translation (vs. real
 	// native captions in the target language). Drives `translated_to` and
 	// the Original ⇄ Translated toggle payload in the response.
@@ -228,9 +218,6 @@ export async function getTranscript(
 			displaySegments = cachedTranslation.segments;
 			displayTranscript = cachedTranslation.transcript;
 			displayLanguage = translateTo!;
-			// Cached output is necessarily a real (non-stubbed) translation:
-			// stubs are deliberately not written to the cache.
-			translationStubbed = false;
 			actuallyTranslated = true;
 		} else {
 			// 2b. Before paying for machine translation, see if YouTube actually
@@ -257,40 +244,30 @@ export async function getTranscript(
 				actuallyTranslated = false;
 
 				if (!nativeInTarget.fromCache) {
-					// Fresh fetch. Cost depends on source: native captions are
-					// flat 1 credit, Whisper bills per minute (Math.ceil of
-					// duration / 60, minimum 1) because we eat real OpenAI
-					// cost on long videos.
-					const cost =
-						nativeInTarget.payload.source === 'whisper'
-							? whisperCreditCost(
-									nativeInTarget.payload.durationSeconds,
-								)
-							: 1;
-					const stateBeforeFetch = await getCreditState(input.userId);
-					if (stateBeforeFetch.balance < cost) {
-						throw new PaymentRequiredError(
-							cost,
-							stateBeforeFetch.balance,
-						);
+					// Fresh fetch in the target language. Cost is rolled into
+					// the single end-of-request deduction; here we just need a
+					// pre-flight balance check so we don't burn a Whisper /
+					// YouTube call for a 0-credit user.
+					if (!didFreshWork) {
+						const stateBeforeFetch = await getCreditState(input.userId);
+						if (stateBeforeFetch.balance < 1) {
+							throw new PaymentRequiredError(
+								1,
+								stateBeforeFetch.balance,
+							);
+						}
 					}
-					await deductCredits({
-						userId: input.userId,
-						amount: cost,
-						reason: 'transcript_fetch',
-						videoId,
-						source: nativeInTarget.payload.source,
-						durationSeconds: nativeInTarget.payload.durationSeconds,
-					});
-					creditsForTranslation = cost;
+					didFreshWork = true;
 				}
 			} else {
 				// 2c. YouTube doesn't have target-language captions. Fall back
-				//     to machine translation (OpenAI → Google → stub, handled
-				//     inside translateSegments).
-				const stateBeforeTrans = await getCreditState(input.userId);
-				if (stateBeforeTrans.balance < 1) {
-					throw new PaymentRequiredError(1, stateBeforeTrans.balance);
+				//     to machine translation (OpenAI → Google, handled inside
+				//     translateSegments).
+				if (!didFreshWork) {
+					const stateBeforeTrans = await getCreditState(input.userId);
+					if (stateBeforeTrans.balance < 1) {
+						throw new PaymentRequiredError(1, stateBeforeTrans.balance);
+					}
 				}
 
 				const translated = await translateSegments(
@@ -301,53 +278,57 @@ export async function getTranscript(
 				displaySegments = translated.segments;
 				displayTranscript = translated.fullText;
 				displayLanguage = translateTo!;
-				translationStubbed = !translated.real;
 				actuallyTranslated = true;
+				didFreshWork = true;
 
-				await deductCredits({
-					userId: input.userId,
-					amount: 1,
-					reason: 'transcript_translation',
+				// Fire-and-forget: the user already has their translation; we
+				// don't want a slow cache write to block the response.
+				void setCachedTranslation({
 					videoId,
-					source: original.source,
-					metadata: {from: original.language, to: translateTo},
+					sourceLanguage: original.language,
+					targetLanguage: translateTo!,
+					transcript: translated.fullText,
+					segments: translated.segments,
+					translator: config.OPENAI_API_KEY ? 'openai' : 'google',
+					cachedAt: new Date().toISOString(),
+				}).catch((err) => {
+					logger.warn(
+						{
+							err,
+							videoId,
+							from: original.language,
+							to: translateTo,
+						},
+						'Failed to cache translation (non-fatal)',
+					);
 				});
-				creditsForTranslation = 1;
-
-				// Only cache real translations. Stubbed output contains the
-				// `[src→tgt]` placeholder prefix and is intentionally
-				// low-quality; caching it would poison the table for 30 days
-				// even after STUB_TRANSLATION is turned off.
-				if (translated.real) {
-					// Fire-and-forget: the user already has their translation;
-					// we don't want a slow cache write to block the response.
-					void setCachedTranslation({
-						videoId,
-						sourceLanguage: original.language,
-						targetLanguage: translateTo!,
-						transcript: translated.fullText,
-						segments: translated.segments,
-						translator: config.OPENAI_API_KEY ? 'openai' : 'google',
-						cachedAt: new Date().toISOString(),
-					}).catch((err) => {
-						logger.warn(
-							{
-								err,
-								videoId,
-								from: original.language,
-								to: translateTo,
-							},
-							'Failed to cache translation (non-fatal)',
-						);
-					});
-				}
 			}
 		}
 	}
 
-	// 3. Final balance + format
+	// 3. Bill the request. Policy: one HTTP request = at most 1 credit, ever.
+	// Multiple internal operations (Whisper for original + Whisper-in-target +
+	// MT, or any combination) coalesce into a single deduction. Cache-only
+	// paths don't get billed. The deduct is transactional and throws
+	// PaymentRequiredError if balance dropped to 0 mid-request (race we let
+	// the pre-flight check try to avoid).
+	if (didFreshWork) {
+		await deductCredits({
+			userId: input.userId,
+			amount: 1,
+			reason: 'transcript_request',
+			videoId,
+			source: original.source,
+			durationSeconds: original.durationSeconds,
+			metadata: actuallyTranslated
+				? {translated_to: translateTo, from: original.language}
+				: undefined,
+		});
+	}
+
+	// 4. Final balance + format
 	const finalState = await getCreditState(input.userId);
-	const totalCreditsUsed = creditsForOriginal + creditsForTranslation;
+	const creditsUsed = didFreshWork ? 1 : 0;
 
 	return formatResponse({
 		payload: {
@@ -356,15 +337,11 @@ export async function getTranscript(
 			segments: displaySegments,
 		},
 		format: input.format,
-		// True when nothing in this request triggered a fresh upstream call:
-		// - the original came from cache, AND
-		// - the target-language work (if any) was either skipped or served
-		//   from cache (translation cache, or native-in-target cache).
-		// `creditsForTranslation === 0` captures all the "no upstream for the
-		// target language" cases — fresh translation and fresh native fetch
-		// both deduct 1, cache hits leave it at 0.
-		cached: originalCacheHit && creditsForTranslation === 0,
-		creditsUsed: totalCreditsUsed,
+		// "Cached" means nothing in this request triggered a fresh upstream
+		// call: original came from cache AND any target-language work was
+		// either skipped or served from cache.
+		cached: !didFreshWork,
+		creditsUsed,
 		creditsRemaining: finalState.balance,
 		displayLanguage,
 		originalLanguage: original.language,
@@ -372,7 +349,6 @@ export async function getTranscript(
 		// actually machine-translated. When YouTube had real captions in the
 		// target language, we treat that as the response's native original.
 		translatedTo: actuallyTranslated ? translateTo! : null,
-		translationStubbed,
 		originalForToggle: actuallyTranslated
 			? {transcript: original.transcript, segments: original.segments}
 			: null,
@@ -478,6 +454,18 @@ async function tryWhisperInTargetLanguage(
 	originalForMetadata: CachedTranscript,
 	allowRealWhisper: boolean,
 ): Promise<{payload: CachedTranscript; fromCache: boolean} | null> {
+	if (!allowRealWhisper) {
+		// Free-plan caller — we won't spend OpenAI quota on them. Returning
+		// null falls through to machine translation of the cached original,
+		// which is the right behavior: the user already paid (in credits) for
+		// the original native-captions fetch and can still get the target
+		// language via the translator tier.
+		logger.info(
+			{videoId, target: targetLanguage},
+			'Skipping Whisper-in-target: caller is not Whisper-eligible; falling back to translation',
+		);
+		return null;
+	}
 	let whisper: Awaited<ReturnType<typeof transcribeWithWhisper>>;
 	try {
 		whisper = await transcribeWithWhisper(videoId, targetLanguage, {
@@ -526,15 +514,30 @@ async function fetchTranscript(
 	} catch (err) {
 		logger.info(
 			{err, videoId, language, nativeOnly, allowRealWhisper},
-			'Failed billal to fetch YouTube captions',
+			'Failed to fetch YouTube captions',
 		);
 		if (err instanceof NoTranscriptError) {
 			if (nativeOnly) {
 				// Caller asked us not to spend Whisper credits; surface the failure.
 				throw err;
 			}
+			if (!allowRealWhisper) {
+				// Free-plan user, no native captions to serve them, and we can't
+				// fall through to Whisper on their behalf. Throw a 402 that names
+				// both halves — *why* we couldn't serve the request and *what*
+				// the user needs to do — instead of silently calling Whisper and
+				// having it reject with a generic upgrade-required.
+				logger.info(
+					{videoId},
+					'No native captions and caller is not Whisper-eligible; surfacing UPGRADE_REQUIRED',
+				);
+				throw new UpgradeRequiredError(
+					'AI transcription',
+					'No native captions are available for this video.',
+				);
+			}
 			logger.info(
-				{videoId, allowRealWhisper},
+				{videoId},
 				'No native captions; falling back to Whisper',
 			);
 			return await transcribeWithWhisper(videoId, language, whisperOpts);
@@ -558,11 +561,12 @@ async function fetchTranscript(
 		}
 		if (err instanceof ApiError) throw err;
 		// Unknown error inside the YouTube layer: treat as Whisper-eligible to
-		// maximize success unless the caller explicitly opted out.
-		if (nativeOnly) {
+		// maximize success unless the caller explicitly opted out or the user
+		// isn't on a paid plan (in which case Whisper isn't an option anyway).
+		if (nativeOnly || !allowRealWhisper) {
 			logger.warn(
-				{err, videoId},
-				'YouTube fetch failed and native_only=true; not falling back',
+				{err, videoId, nativeOnly, allowRealWhisper},
+				'YouTube fetch failed and Whisper fallback unavailable; surfacing original error',
 			);
 			throw err;
 		}
@@ -593,8 +597,6 @@ interface FormatResponseOptions {
 	originalLanguage: string;
 	/** Set when a translation was applied; null otherwise. */
 	translatedTo: string | null;
-	/** Set when the translator fell back to the stub (no real OpenAI call). */
-	translationStubbed?: boolean;
 	/**
 	 * When translation was applied, this carries the UNtranslated transcript
 	 * + segments so the JSON response can ship both for instant Original ⇄
@@ -614,7 +616,6 @@ function formatResponse(opts: FormatResponseOptions): TranscriptResponse {
 		language: opts.displayLanguage,
 		original_language: opts.originalLanguage,
 		translated_to: opts.translatedTo,
-		translation_stubbed: opts.translationStubbed,
 		source: payload.source,
 		format,
 		credits_used: opts.creditsUsed,

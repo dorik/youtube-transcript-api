@@ -66,9 +66,9 @@ export function priceIdToPlanId(priceId: string): PlanId | null {
  * True for any plan that's paid (i.e. NOT 'free').
  *
  * Used to gate features that cost real money on our side — most notably
- * the OpenAI Whisper transcription path. Free users get the canned stub
- * response instead, so we don't burn OpenAI quota on accounts that
- * haven't paid anything.
+ * the OpenAI Whisper transcription path. Free users are rejected with
+ * `UpgradeRequiredError` (HTTP 402) so we don't burn OpenAI quota on
+ * accounts that haven't paid anything.
  *
  * `undefined` / `null` (no subscription row at all) is treated as free —
  * a fresh user gets a row on signup, but we shouldn't blow up if the
@@ -81,13 +81,8 @@ export function isPaidPlan(planId: PlanId | null | undefined): boolean {
 
 let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
-	if (config.STUB_STRIPE) {
-		throw new Error(
-			'Stripe is stubbed; getStripe() should not be called when STUB_STRIPE=true',
-		);
-	}
 	if (!config.STRIPE_SECRET_KEY) {
-		throw new Error('STRIPE_SECRET_KEY is required when STUB_STRIPE=false');
+		throw new Error('STRIPE_SECRET_KEY is required');
 	}
 	if (!stripeClient) {
 		// Pin to whatever the installed SDK declares as latest. We cast because
@@ -103,8 +98,7 @@ function getStripe(): Stripe {
  * so re-checkouts re-use it instead of minting a fresh Customer each time.
  *
  * Returns `null` if the user has never been billed (no row, or row exists
- * but `stripe_customer_id` is still null — e.g. a stub-mode user who never
- * went through real checkout).
+ * but `stripe_customer_id` is still null).
  */
 async function getStoredStripeCustomerId(
 	userId: string,
@@ -231,7 +225,7 @@ async function updateSubscriptionPlan(opts: {
 export type ChangePlanOutcome =
 	| {status: 'noop'; reason: 'already_on_plan'}
 	| {status: 'no_subscription'} // caller should redirect to checkout
-	| {status: 'changed'; mode: 'stub' | 'live'};
+	| {status: 'changed'};
 
 /**
  * Switch an existing subscription to a different paid plan.
@@ -241,14 +235,11 @@ export type ChangePlanOutcome =
  * /billing/checkout instead. Doing the dispatch here instead of in the
  * route keeps the Stripe details out of the HTTP layer.
  *
- * Live mode mutates the Stripe Subscription's price item with prorations
- * (no immediate charge — proration nets out on the next invoice). The
+ * Mutates the Stripe Subscription's price item with prorations (no immediate
+ * charge — proration nets out on the next invoice). The
  * customer.subscription.updated webhook then syncs our DB. We deliberately
  * don't touch our DB here so the webhook stays the single source of truth
  * and credits aren't refilled twice.
- *
- * Stub mode short-circuits straight to applyPlanUpgrade so dev/QA workflows
- * don't need Stripe configured.
  */
 export async function changeSubscriptionPlan(opts: {
 	userId: string;
@@ -272,29 +263,18 @@ export async function changeSubscriptionPlan(opts: {
 		return {status: 'noop', reason: 'already_on_plan'};
 	}
 
-	if (config.STUB_STRIPE) {
-		// No Stripe round-trip; flip the plan locally just like stub-activate.
-		await applyPlanUpgrade({
-			userId: opts.userId,
-			plan: opts.plan,
-			stripeEventId: `stub_change_${opts.userId}_${opts.plan}_${Date.now()}`,
-		});
-		return {status: 'changed', mode: 'stub'};
-	}
-
 	await updateSubscriptionPlan({
 		userId: opts.userId,
 		stripeSubscriptionId: stored!.stripeSubscriptionId!,
 		currentPlan: stored!.planId,
 		plan: opts.plan,
 	});
-	return {status: 'changed', mode: 'live'};
+	return {status: 'changed'};
 }
 
 /**
  * Create a checkout session and return the URL the user should be redirected
- * to. In stub mode we return a frontend route that the dashboard treats as a
- * "stub success" — clicking it activates the upgrade locally.
+ * to.
  *
  * This is for FIRST-TIME paid signups only (free → paid, or post-cancel
  * re-signup). For an existing active subscriber switching plans, use
@@ -305,18 +285,11 @@ export async function createCheckoutSession(opts: {
 	userId: string;
 	email: string;
 	plan: PlanId;
-}): Promise<{url: string; mode: 'stub' | 'live'}> {
+}): Promise<{url: string}> {
 	if (opts.plan === 'free') {
 		throw new Error('Cannot create a checkout session for the Free plan');
 	}
 	const planConfig = PLANS[opts.plan];
-
-	if (config.STUB_STRIPE) {
-		return {
-			mode: 'stub',
-			url: `${config.FRONTEND_URL}/dashboard/billing?stub_success=1&plan=${opts.plan}`,
-		};
-	}
 
 	const stripe = getStripe();
 	const priceId = config[planConfig.stripePriceEnvKey!] as string | undefined;
@@ -349,16 +322,15 @@ export async function createCheckoutSession(opts: {
 		subscription_data: {metadata: {user_id: opts.userId, plan: opts.plan}},
 	});
 
-	return {mode: 'live', url: session.url ?? ''};
+	return {url: session.url ?? ''};
 }
 
 /**
- * Apply an upgrade. Used by both the stub success endpoint and real Stripe
- * webhook handlers. Idempotent on `subscriptions.user_id` — calling twice
- * for the same plan is safe.
+ * Apply an upgrade. Used by Stripe webhook handlers. Idempotent on
+ * `subscriptions.user_id` — calling twice for the same plan is safe.
  *
  * `currentPeriodEnd` is the cycle end from Stripe (preferred). When absent
- * we fall back to NOW()+30d, which is what the stub path uses.
+ * we fall back to NOW()+30d.
  */
 export async function applyPlanUpgrade(opts: {
 	userId: string;
@@ -485,11 +457,6 @@ export function verifyStripeWebhook(
 	rawBody: Buffer,
 	signature: string,
 ): Stripe.Event {
-	if (config.STUB_STRIPE) {
-		throw new Error(
-			'Webhooks should not be reaching this code path in stub mode',
-		);
-	}
 	if (!config.STRIPE_WEBHOOK_SECRET) {
 		throw new Error(
 			'STRIPE_WEBHOOK_SECRET is required to verify Stripe webhooks',

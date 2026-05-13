@@ -4,6 +4,7 @@ import { sessionAuth } from '../middleware/sessionAuth';
 import { getTranscript } from '../services/transcriptService';
 import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError } from '../utils/errors';
+import { extractVideoId } from '../utils/youtubeUrl';
 import { pool } from '../db/pool';
 import { logger } from '../config/logger';
 
@@ -31,53 +32,91 @@ const QuerySchema = z.object({
 
 meTranscriptRouter.get('/', async (req, res, next) => {
   const startedAt = Date.now();
+  // Pulled out of the try block so the `finally` log can include them whether
+  // the request succeeded or threw. Mirrors the /v1/transcript pattern so
+  // dashboard usage charts capture failed requests too — without this,
+  // upgrade_required / insufficient_credits / no_transcript responses were
+  // invisible in "Recent activity".
+  let parsed: z.infer<typeof QuerySchema> | null = null;
+  let videoId: string | null = null;
+  let result: Awaited<ReturnType<typeof getTranscript>> | null = null;
+  let statusCode = 200;
+  let errorCode: string | null = null;
+  let errorMessage: string | null = null;
+
   try {
-    const parsed = QuerySchema.safeParse(req.query);
-    if (!parsed.success) {
+    const parseResult = QuerySchema.safeParse(req.query);
+    if (!parseResult.success) {
       throw new ValidationError('Invalid query parameters', {
-        issues: parsed.error.flatten().fieldErrors,
+        issues: parseResult.error.flatten().fieldErrors,
       });
     }
+    parsed = parseResult.data;
 
-    const result = await getTranscript({
+    // Resolve the video_id up front so the failure-path log row has it.
+    // extractVideoId throws ValidationError on a malformed URL; we swallow
+    // that here (log row gets video_id=null and getTranscript will re-throw
+    // the same error in a moment, which the catch block records normally).
+    try {
+      videoId = extractVideoId(parsed.url);
+    } catch {
+      videoId = null;
+    }
+
+    result = await getTranscript({
       userId: req.user!.id,
-      url: parsed.data.url,
-      format: parsed.data.format,
-      language: parsed.data.language,
-      nativeOnly: parsed.data.native_only,
-      translateTo: parsed.data.translate_to,
+      url: parsed.url,
+      format: parsed.format,
+      language: parsed.language,
+      nativeOnly: parsed.native_only,
+      translateTo: parsed.translate_to,
     });
 
-    // Log to the same api_requests audit so dashboard usage charts stay
-    // accurate regardless of which entry point the user hit.
+    res.json(result);
+  } catch (err) {
+    statusCode =
+      err && typeof err === 'object' && 'status' in err && typeof (err as { status?: unknown }).status === 'number'
+        ? (err as { status: number }).status
+        : 500;
+    errorCode =
+      err && typeof err === 'object' && 'code' in err
+        ? String((err as { code: unknown }).code)
+        : 'INTERNAL_ERROR';
+    errorMessage =
+      err instanceof Error ? err.message.slice(0, 500) : null;
+    next(err);
+    return;
+  } finally {
+    // Background log. Best-effort — never block the response.
     void pool
       .query(
         `INSERT INTO api_requests
           (user_id, method, endpoint, status_code,
            video_url, video_id, format, language, response_time_ms,
-           transcript_source, cache_hit, credits_used, ip_address, user_agent)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+           transcript_source, cache_hit, credits_used,
+           error_code, error_message, ip_address, user_agent)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
         [
           req.user!.id,
           'GET',
           '/me/transcript',
-          200,
-          parsed.data.url,
-          result.video_id,
-          parsed.data.format,
-          parsed.data.language ?? null,
+          statusCode,
+          parsed?.url ?? (req.query.url as string | undefined) ?? null,
+          result?.video_id ?? videoId,
+          parsed?.format ?? null,
+          parsed?.language ?? null,
           Date.now() - startedAt,
-          result.source,
-          result.cached,
-          result.credits_used,
+          result?.source ?? null,
+          result?.cached ?? null,
+          result?.credits_used ?? null,
+          errorCode,
+          errorMessage,
           req.ip ?? null,
           req.headers['user-agent']?.slice(0, 500) ?? null,
         ],
       )
-      .catch((err) => logger.warn({ err }, 'Failed to log /me/transcript request'));
-
-    res.json(result);
-  } catch (err) {
-    next(err);
+      .catch((err) =>
+        logger.warn({ err }, 'Failed to log /me/transcript request'),
+      );
   }
 });
