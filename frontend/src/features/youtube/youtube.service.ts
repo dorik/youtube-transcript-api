@@ -3,8 +3,12 @@ import { createApi } from '@/lib/http/createApi';
 import { methodsEnums } from '@/lib/http/constants';
 import type {
   ChannelSearchInput,
+  ChannelTranscriptsInput,
+  ChannelTranscriptsResponse,
   ChannelVideosInput,
   ChannelVideosResponse,
+  PlaylistTranscriptsInput,
+  PlaylistTranscriptsResponse,
   PlaylistVideosInput,
   PlaylistVideosResponse,
   SearchYouTubeInput,
@@ -75,6 +79,26 @@ function videoMetadataQuery({ bearer, url }: VideoMetadataInput) {
   };
 }
 
+function playlistTranscriptsQuery({ bearer, ...params }: PlaylistTranscriptsInput) {
+  return {
+    url: '/v1/playlist/transcripts',
+    method: methodsEnums.GET,
+    // Axios will omit `undefined` values from the query string, so unset
+    // options (e.g. language, translate_to) don't appear as `=` pairs.
+    params,
+    config: authConfig(bearer),
+  };
+}
+
+function channelTranscriptsQuery({ bearer, ...params }: ChannelTranscriptsInput) {
+  return {
+    url: '/v1/channel/transcripts',
+    method: methodsEnums.GET,
+    params,
+    config: authConfig(bearer),
+  };
+}
+
 export const searchYouTube = createApi<SearchYouTubeInput, SearchYouTubeResponse>({
   queryFn: apiClient,
   query: searchYouTubeQuery,
@@ -103,4 +127,20 @@ export const getPlaylistVideos = createApi<PlaylistVideosInput, PlaylistVideosRe
 export const getVideoMetadata = createApi<VideoMetadataInput, VideoMetadataResponse>({
   queryFn: apiClient,
   query: videoMetadataQuery,
+});
+
+export const getPlaylistTranscripts = createApi<
+  PlaylistTranscriptsInput,
+  PlaylistTranscriptsResponse
+>({
+  queryFn: apiClient,
+  query: playlistTranscriptsQuery,
+});
+
+export const getChannelTranscripts = createApi<
+  ChannelTranscriptsInput,
+  ChannelTranscriptsResponse
+>({
+  queryFn: apiClient,
+  query: channelTranscriptsQuery,
 });

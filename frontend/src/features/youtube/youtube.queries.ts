@@ -1,7 +1,9 @@
 import { useMutation } from '@tanstack/react-query';
 import {
   getChannelLatest,
+  getChannelTranscripts,
   getChannelVideos,
+  getPlaylistTranscripts,
   getPlaylistVideos,
   getVideoMetadata,
   searchChannelVideos,
@@ -9,8 +11,12 @@ import {
 } from './youtube.service';
 import type {
   ChannelSearchInput,
+  ChannelTranscriptsInput,
+  ChannelTranscriptsResponse,
   ChannelVideosInput,
   ChannelVideosResponse,
+  PlaylistTranscriptsInput,
+  PlaylistTranscriptsResponse,
   PlaylistVideosInput,
   PlaylistVideosResponse,
   SearchYouTubeInput,
@@ -57,6 +63,20 @@ export function usePlaylistVideosMutation() {
 export function useVideoMetadataMutation() {
   return useMutation<VideoMetadataResponse, Error, VideoMetadataInput>({
     mutationFn: getVideoMetadata,
+    meta: { suppressGlobalError: true },
+  });
+}
+
+export function usePlaylistTranscriptsMutation() {
+  return useMutation<PlaylistTranscriptsResponse, Error, PlaylistTranscriptsInput>({
+    mutationFn: getPlaylistTranscripts,
+    meta: { suppressGlobalError: true },
+  });
+}
+
+export function useChannelTranscriptsMutation() {
+  return useMutation<ChannelTranscriptsResponse, Error, ChannelTranscriptsInput>({
+    mutationFn: getChannelTranscripts,
     meta: { suppressGlobalError: true },
   });
 }

@@ -89,3 +89,74 @@ export interface VideoMetadataResponse {
   thumbnail_url: string | null;
   credits_used: number;
 }
+
+// ---------------------------------------------------------------------------
+// Bulk transcripts — playlist / channel one-call endpoints.
+//
+// One HTTP call expands the source list and returns N transcripts (or per-
+// item errors). Server-side concurrency is bounded to 5, so the response
+// time scales sub-linearly with `limit` (capped at 20 server-side).
+// ---------------------------------------------------------------------------
+
+import type { TranscriptResponse } from '@/lib/api';
+
+export type ChannelTranscriptsMode = 'latest' | 'videos' | 'search';
+
+interface BulkTranscriptCommonOptions {
+  bearer: string;
+  limit?: number;
+  format?: 'json' | 'text' | 'srt' | 'vtt' | 'text-timestamps';
+  language?: string;
+  native_only?: boolean;
+  translate_to?: string;
+}
+
+export interface PlaylistTranscriptsInput extends BulkTranscriptCommonOptions {
+  playlist: string;
+}
+
+export interface ChannelTranscriptsInput extends BulkTranscriptCommonOptions {
+  channel: string;
+  mode?: ChannelTranscriptsMode;
+  q?: string;
+}
+
+export interface BulkTranscriptError {
+  code: string;
+  message: string;
+}
+
+export interface BulkTranscriptItem {
+  url: string;
+  video_id: string | null;
+  title: string | null;
+  channel: string | null;
+  thumbnail_url: string | null;
+  duration_text: string | null;
+  ok: boolean;
+  /** Populated when ok === true. */
+  transcript?: TranscriptResponse;
+  /** Populated when ok === false. */
+  error?: BulkTranscriptError;
+}
+
+export interface PlaylistTranscriptsResponse {
+  playlist_id: string;
+  items: BulkTranscriptItem[];
+  total: number;
+  succeeded: number;
+  failed: number;
+  credits_used: number;
+}
+
+export interface ChannelTranscriptsResponse {
+  channel: string;
+  mode: ChannelTranscriptsMode;
+  /** Only present when mode === 'search'. */
+  query?: string;
+  items: BulkTranscriptItem[];
+  total: number;
+  succeeded: number;
+  failed: number;
+  credits_used: number;
+}
