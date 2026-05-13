@@ -29,6 +29,7 @@ import {
 } from '../utils/errors';
 import {logger} from '../config/logger';
 import {config} from '../config/env';
+import {normalizeLanguageCode} from '../utils/languageCodes';
 
 export interface TranscriptResponse {
 	video_id: string;
@@ -106,20 +107,25 @@ export async function getTranscript(
 	// 'auto' is our marker for "let YouTube pick whatever track is available".
 	// Previously this defaulted to 'en', which silently broke any video that
 	// didn't have an English caption track (e.g. a Bangla news video).
+	// User input is normalized to canonical ISO 639-1 codes before any
+	// downstream comparison or cache lookup. Without this, an API caller
+	// passing `language=english` or `translate_to=Bengali` would write
+	// transcripts into cache keys nobody else would ever hit, and the
+	// `translateTo !== original.language` check below would flip to true
+	// even when the languages are semantically identical. See
+	// `utils/languageCodes.ts` for the full map and the reason it exists.
 	const requestedLanguage =
 		input.language && input.language.trim() && input.language !== 'auto'
-			? input.language
+			? normalizeLanguageCode(input.language) || input.language.trim()
 			: 'auto';
 
-	// Normalize translation target. 'none' / undefined / empty all mean "no
-	// translation"; we'll also skip translation if the target equals the
-	// original language we end up with.
 	const translateTo =
 		input.translateTo &&
 		input.translateTo.trim() &&
 		input.translateTo !== 'none' &&
 		input.translateTo !== 'auto'
-			? input.translateTo.trim()
+			? normalizeLanguageCode(input.translateTo) ||
+				input.translateTo.trim()
 			: null;
 
 	// Real OpenAI Whisper is a paid-only feature. We look this up once up
@@ -249,7 +255,9 @@ export async function getTranscript(
 					// pre-flight balance check so we don't burn a Whisper /
 					// YouTube call for a 0-credit user.
 					if (!didFreshWork) {
-						const stateBeforeFetch = await getCreditState(input.userId);
+						const stateBeforeFetch = await getCreditState(
+							input.userId,
+						);
 						if (stateBeforeFetch.balance < 1) {
 							throw new PaymentRequiredError(
 								1,
@@ -266,7 +274,10 @@ export async function getTranscript(
 				if (!didFreshWork) {
 					const stateBeforeTrans = await getCreditState(input.userId);
 					if (stateBeforeTrans.balance < 1) {
-						throw new PaymentRequiredError(1, stateBeforeTrans.balance);
+						throw new PaymentRequiredError(
+							1,
+							stateBeforeTrans.balance,
+						);
 					}
 				}
 
@@ -521,6 +532,10 @@ async function fetchTranscript(
 				// Caller asked us not to spend Whisper credits; surface the failure.
 				throw err;
 			}
+			logger.info(
+				{allowRealWhisper},
+				`is user paid:${allowRealWhisper}'`,
+			);
 			if (!allowRealWhisper) {
 				// Free-plan user, no native captions to serve them, and we can't
 				// fall through to Whisper on their behalf. Throw a 402 that names
@@ -540,7 +555,13 @@ async function fetchTranscript(
 				{videoId},
 				'No native captions; falling back to Whisper',
 			);
-			return await transcribeWithWhisper(videoId, language, whisperOpts);
+			const response = await transcribeWithWhisper(
+				videoId,
+				language,
+				whisperOpts,
+			);
+			logger.info({response}, `response:${JSON.stringify(response)}'`);
+			return response;
 		}
 		// YouTube is refusing to serve our IP — either an HTTP 429 from their
 		// edge or the "Sign in to confirm you're not a bot" challenge that
@@ -777,7 +798,11 @@ export async function runBulkTranscripts(
 	// chunk — we already swallow inside processOne, but it's defense in depth.
 	for (let i = 0; i < opts.videos.length; i += BULK_CONCURRENCY) {
 		const chunk: number[] = [];
-		for (let j = i; j < Math.min(i + BULK_CONCURRENCY, opts.videos.length); j++) {
+		for (
+			let j = i;
+			j < Math.min(i + BULK_CONCURRENCY, opts.videos.length);
+			j++
+		) {
 			chunk.push(j);
 		}
 		await Promise.allSettled(chunk.map((idx) => processOne(idx)));
@@ -790,15 +815,17 @@ export async function runBulkTranscripts(
 		}
 	}
 
-	const finalItems = items.map((it, idx) =>
-		it ?? makeFailureItem(opts.videos[idx], {
-			code: 'INTERNAL_ERROR',
-			message: 'Item was not processed',
-		}),
+	const finalItems = items.map(
+		(it, idx) =>
+			it ??
+			makeFailureItem(opts.videos[idx], {
+				code: 'INTERNAL_ERROR',
+				message: 'Item was not processed',
+			}),
 	);
 	const succeeded = finalItems.filter((i) => i.ok).length;
 	const credits_used = finalItems.reduce(
-		(sum, i) => sum + (i.ok ? i.transcript?.credits_used ?? 0 : 0),
+		(sum, i) => sum + (i.ok ? (i.transcript?.credits_used ?? 0) : 0),
 		0,
 	);
 

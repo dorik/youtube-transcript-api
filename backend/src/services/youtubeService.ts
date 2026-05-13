@@ -10,6 +10,7 @@ import {
 	VideoNotFoundError,
 } from '../utils/errors';
 import {Segment} from './formatters';
+import {normalizeLanguageCode} from '../utils/languageCodes';
 
 const execFileAsync = promisify(execFile);
 
@@ -153,7 +154,12 @@ export async function fetchYouTubeCaptions(
 		return {
 			videoId,
 			segments,
-			language: pick.lang,
+			// Normalize at the boundary: `pick.lang` can be `en-orig`, `en-auto`,
+			// or a mis-cased region tag, none of which would strict-match against
+			// an ISO code from the request layer. Downstream code compares this
+			// against `translate_to`, the user's `language`, and cache keys —
+			// all expected to be canonical ISO 639-1.
+			language: normalizeLanguageCode(pick.lang) || pick.lang,
 			durationSeconds,
 			source: 'native_captions',
 		};
@@ -411,12 +417,11 @@ export function mapYtDlpError(
 	// Diagnostic: every yt-dlp failure (caption path + whisper-audio path)
 	// passes through here. The raw stderr is what YouTube literally
 	// returned, so this is the ground truth for "is YouTube blocking us
-	// or is our code misbehaving". Search Render logs for "billal" to
+	// or is our code misbehaving". Search Render logs for "yt-dlp failed" to
 	// pull these lines. `args` is intentionally NOT logged — when
 	// PROXY_URL is set it contains proxy credentials in plaintext.
 	logger.warn(
 		{
-			marker: 'billal',
 			videoId,
 			context,
 			blob,
@@ -426,7 +431,7 @@ export function mapYtDlpError(
 			stderr: stderr.slice(0, 1500),
 			messageHead: message.slice(0, 300),
 		},
-		'billal: yt-dlp failed',
+		'error: yt-dlp failed',
 	);
 
 	if (

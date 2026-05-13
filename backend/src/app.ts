@@ -14,6 +14,7 @@ import { billingRouter } from './routes/billing';
 import { webhooksRouter } from './routes/webhooks';
 import { usageRouter } from './routes/usage';
 import { youtubeBrowseRouter } from './routes/youtubeBrowse';
+import { adminRouter } from './routes/admin';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 /**
@@ -97,6 +98,7 @@ export function createApp(): Application {
   app.use('/v1', youtubeBrowseRouter);
   app.use('/billing', billingRouter); // /billing/plans, /billing/subscription, /billing/checkout, /billing/change-plan
   app.use('/webhooks', webhooksRouter);
+  app.use('/admin', adminRouter); // Operator-only; gated by ADMIN_TOKEN env. 404s when env is unset.
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -2,12 +2,15 @@ import { withTransaction, pool } from '../db/pool';
 import { hashPassword } from '../utils/password';
 import { ConflictError, NotFoundError } from '../utils/errors';
 
+export type UserRole = 'user' | 'sys_admin';
+
 export interface User {
   id: string;
   email: string;
   display_name: string | null;
   is_active: boolean;
   is_suspended: boolean;
+  role: UserRole;
   created_at: Date;
   last_login_at: Date | null;
 }
@@ -49,7 +52,7 @@ export async function createUser(
     const userResult = await client.query<User>(
       `INSERT INTO users (email, password_hash, display_name)
        VALUES ($1, $2, $3)
-       RETURNING id, email, display_name, is_active, is_suspended, created_at, last_login_at`,
+       RETURNING id, email, display_name, is_active, is_suspended, role, created_at, last_login_at`,
       [lowercaseEmail, passwordHash, displayName ?? null],
     );
     const user = userResult.rows[0];
@@ -76,7 +79,7 @@ export async function createUser(
 
 export async function getUserByEmail(email: string): Promise<UserWithPassword | null> {
   const { rows } = await pool.query<UserWithPassword>(
-    `SELECT id, email, password_hash, display_name, is_active, is_suspended, created_at, last_login_at
+    `SELECT id, email, password_hash, display_name, is_active, is_suspended, role, created_at, last_login_at
      FROM users WHERE email = $1`,
     [email.toLowerCase().trim()],
   );
@@ -85,7 +88,7 @@ export async function getUserByEmail(email: string): Promise<UserWithPassword | 
 
 export async function getUserById(id: string): Promise<User | null> {
   const { rows } = await pool.query<User>(
-    `SELECT id, email, display_name, is_active, is_suspended, created_at, last_login_at
+    `SELECT id, email, display_name, is_active, is_suspended, role, created_at, last_login_at
      FROM users WHERE id = $1`,
     [id],
   );

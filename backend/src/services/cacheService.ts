@@ -194,6 +194,108 @@ export async function setCached(
 }
 
 // ---------------------------------------------------------------------------
+// Cache invalidation
+//
+// `clearCache(videoId?)` wipes both tiers (Redis + Postgres) for either a
+// single video or every cached entry. Used by the admin endpoint and the
+// one-off scripts. Rate-limit keys (`ratelimit:*`) are deliberately left
+// alone — they're not cache and self-expire in 60s anyway.
+//
+// Counts are returned so the caller can report meaningful telemetry rather
+// than "ok".
+// ---------------------------------------------------------------------------
+
+export interface ClearCacheResult {
+  scope: 'all' | 'video';
+  videoId: string | null;
+  redis: { transcripts: number; translations: number };
+  postgres: { cached_transcripts: number; translated_transcripts: number };
+}
+
+async function scanDelete(pattern: string): Promise<number> {
+  let cursor = '0';
+  let deleted = 0;
+  do {
+    const [next, keys] = await redis.scan(
+      cursor,
+      'MATCH',
+      pattern,
+      'COUNT',
+      500,
+    );
+    cursor = next;
+    if (keys.length > 0) {
+      deleted += await redis.del(...keys);
+    }
+  } while (cursor !== '0');
+  return deleted;
+}
+
+export async function clearCache(videoId?: string): Promise<ClearCacheResult> {
+  if (videoId) {
+    // Targeted clear: only the keys/rows for this video.
+    const t = await scanDelete(`transcript:${videoId}:*`);
+    const tr = await scanDelete(`translation:${videoId}:*`);
+    const { rowCount: ct } = await pool.query(
+      'DELETE FROM cached_transcripts WHERE video_id = $1',
+      [videoId],
+    );
+    const { rowCount: tt } = await pool.query(
+      'DELETE FROM translated_transcripts WHERE video_id = $1',
+      [videoId],
+    );
+    return {
+      scope: 'video',
+      videoId,
+      redis: { transcripts: t, translations: tr },
+      postgres: { cached_transcripts: ct ?? 0, translated_transcripts: tt ?? 0 },
+    };
+  }
+
+  // Full wipe. Use SCAN (non-blocking) so a large keyspace doesn't lock
+  // Redis while it runs.
+  const t = await scanDelete('transcript:*');
+  const tr = await scanDelete('translation:*');
+
+  // TRUNCATE is faster than DELETE and resets stats counters; we don't
+  // need before/after counts on the SQL side because both tables are pure
+  // cache. Wrap in a transaction so they truncate atomically.
+  let cachedRows = 0;
+  let translatedRows = 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: c } = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM cached_transcripts',
+    );
+    const { rows: tr2 } = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM translated_transcripts',
+    );
+    cachedRows = Number(c[0]?.count ?? 0);
+    translatedRows = Number(tr2[0]?.count ?? 0);
+    await client.query(
+      'TRUNCATE cached_transcripts, translated_transcripts RESTART IDENTITY',
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return {
+    scope: 'all',
+    videoId: null,
+    redis: { transcripts: t, translations: tr },
+    postgres: {
+      cached_transcripts: cachedRows,
+      translated_transcripts: translatedRows,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Translation cache
 //
 // Translations are cached separately from native transcripts so that

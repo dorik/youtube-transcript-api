@@ -9,6 +9,7 @@ import {logger} from '../config/logger';
 import {UpgradeRequiredError} from '../utils/errors';
 import {Segment} from './formatters';
 import {mapYtDlpError, ytDlpNetworkArgs} from './youtubeService';
+import {normalizeLanguageCode} from '../utils/languageCodes';
 
 const execFileAsync = promisify(execFile);
 
@@ -131,11 +132,19 @@ export async function transcribeWithWhisper(
 			duration: Math.max(0.001, s.end - s.start),
 			text: s.text.trim(),
 		})) ?? [{start: 0, duration: durationSeconds, text: verbose.text}];
+		// Whisper's verbose_json returns the detected language as a lowercase
+		// English NAME (e.g. "bengali", "english"), not an ISO code. Normalize
+		// at the boundary so downstream equality checks against ISO codes
+		// (translate_to, cache keys, user input) actually work.
+		const normalized =
+			normalizeLanguageCode(verbose.language) ||
+			normalizeLanguageCode(language) ||
+			'en';
 
 		return {
 			videoId,
 			segments,
-			language: verbose.language || language || 'en',
+			language: normalized,
 			durationSeconds,
 			source: 'whisper',
 		};
@@ -150,4 +159,3 @@ export async function transcribeWithWhisper(
 		});
 	}
 }
-
