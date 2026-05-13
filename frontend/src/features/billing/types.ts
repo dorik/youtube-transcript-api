@@ -19,11 +19,6 @@ export interface BillingOverviewResponse {
 
 export interface CheckoutResponse {
   url: string;
-  mode: 'stub' | 'live';
-}
-
-export interface StubActivateResponse {
-  ok: true;
 }
 
 /**
@@ -31,11 +26,10 @@ export interface StubActivateResponse {
  * already-active subscription — does NOT mint a new Stripe session, so
  * there's no `url` to redirect to.
  *
- * - `changed`: Stripe accepted (or stub applied) the price swap; the
- *   webhook will refresh our DB shortly.
+ * - `changed`: Stripe accepted the price swap; the webhook will refresh our
+ *   DB shortly.
  * - `noop`: User is already on this plan, server skipped the call.
  */
 export interface ChangePlanResponse {
   status: 'changed' | 'noop';
-  mode?: 'stub' | 'live';
 }

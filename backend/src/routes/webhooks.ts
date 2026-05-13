@@ -8,7 +8,6 @@ import {
   PlanId,
   PLANS,
 } from '../services/stripeService';
-import { config } from '../config/env';
 import { logger } from '../config/logger';
 import { pool } from '../db/pool';
 
@@ -17,9 +16,6 @@ export const webhooksRouter = Router();
 /**
  * Stripe webhook handler. Mounted with `raw` body parser so signature
  * verification gets the exact bytes Stripe signed.
- *
- * In stub mode this responds 200 to keep platforms (Stripe CLI tests,
- * staging-hosted webhooks) from retrying, but does no work.
  *
  * ## Event routing
  *
@@ -43,11 +39,6 @@ export const webhooksRouter = Router();
  * up would only risk granting credits twice.
  */
 webhooksRouter.post('/stripe', raw({ type: 'application/json' }), async (req, res) => {
-  if (config.STUB_STRIPE) {
-    logger.info('Stripe webhook received in stub mode; ignoring');
-    return res.json({ received: true, mode: 'stub' });
-  }
-
   const signature = req.headers['stripe-signature'];
   if (typeof signature !== 'string') {
     return res.status(400).json({ error: 'missing stripe-signature' });

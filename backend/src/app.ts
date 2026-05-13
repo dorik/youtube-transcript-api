@@ -95,7 +95,7 @@ export function createApp(): Application {
   app.use('/me/transcripts', meTranscriptsRouter);
   app.use('/v1', transcriptRouter);
   app.use('/v1', youtubeBrowseRouter);
-  app.use('/billing', billingRouter); // /billing/plans, /billing/subscription, /billing/checkout, /billing/stub-activate
+  app.use('/billing', billingRouter); // /billing/plans, /billing/subscription, /billing/checkout, /billing/change-plan
   app.use('/webhooks', webhooksRouter);
 
   app.use(notFoundHandler);

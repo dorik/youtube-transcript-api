@@ -13,7 +13,6 @@ import {
   useBillingOverviewQuery,
   useChangePlanMutation,
   useCheckoutMutation,
-  useStubActivateMutation,
   type PaidPlanId,
 } from '@/features/billing';
 
@@ -33,7 +32,6 @@ export default function BillingPage() {
   const billingOverviewQuery = useBillingOverviewQuery();
   const checkoutMutation = useCheckoutMutation();
   const changePlanMutation = useChangePlanMutation();
-  const stubActivateMutation = useStubActivateMutation();
 
   const data = billingOverviewQuery.data;
   const loading = billingOverviewQuery.isLoading;
@@ -50,26 +48,8 @@ export default function BillingPage() {
   const startFreshCheckout = useCallback(
     (planId: PaidPlanId) => {
       checkoutMutation.mutate(planId, {
-        onSuccess: ({ url, mode }) => {
-          if (mode === 'stub') {
-            // No real Stripe in stub mode — apply the change locally instead
-            // of round-tripping through `?stub_success=1`. The previous flow
-            // (full-document redirect + URL-driven useEffect) was prone to a
-            // mutation re-fire loop; calling stub-activate straight from the
-            // checkout response keeps it linear.
-            stubActivateMutation.mutate(planId, {
-              onSuccess: () => {
-                toast.success(`Switched to ${planId} (stub)`);
-                setBusyPlan(null);
-              },
-              onError: (err) => {
-                toast.error(getApiErrorMessage(err, 'Stub activation failed'));
-                setBusyPlan(null);
-              },
-            });
-            return;
-          }
-          // Live Stripe — full-document redirect (cross-origin, no SPA nav).
+        onSuccess: ({ url }) => {
+          // Stripe Checkout — full-document redirect (cross-origin, no SPA nav).
           window.location.href = url;
         },
         onError: (err) => {
@@ -78,7 +58,7 @@ export default function BillingPage() {
         },
       });
     },
-    [checkoutMutation, stubActivateMutation],
+    [checkoutMutation],
   );
 
   function onPlanChange(planId: PaidPlanId) {
@@ -94,8 +74,8 @@ export default function BillingPage() {
         if (status === 'noop') {
           toast.info(`You're already on ${planId}.`);
         } else {
-          // Stripe accepted the price swap (or stub applied it). The webhook
-          // refresh lands a beat later — the mutation hook handles re-fetch.
+          // Stripe accepted the price swap. The webhook refresh lands a beat
+          // later — the mutation hook handles re-fetch.
           toast.success(`Switched to ${planId}. Your plan will update shortly.`);
         }
         setBusyPlan(null);
@@ -224,10 +204,6 @@ export default function BillingPage() {
         })}
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Stub billing mode is active. Upgrades are simulated locally; no real charges happen.
-        Set <code className="font-mono">STUB_STRIPE=false</code> on the backend to use live Stripe.
-      </p>
     </div>
   );
 }

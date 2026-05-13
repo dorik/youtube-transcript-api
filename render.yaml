@@ -76,21 +76,13 @@ services:
           name: yt-transcripts-redis
           property: connectionString
 
-      # Stub flags — flip to false once you have OpenAI / Stripe credentials.
-      - key: STUB_STRIPE
-        value: 'true'
-      - key: STUB_WHISPER
-        value: 'true'
-      - key: STUB_PROXY
-        value: 'true'
-      # Translation defaults to false (uses the free Google fallback when no
-      # OpenAI key is set; OpenAI when one is provided).
-      - key: STUB_TRANSLATION
-        value: 'false'
-
-      # Optional secrets — leave empty until you have them. Each `sync:
-      # false` shows up as an empty field in the Render dashboard for you
-      # to fill in or skip.
+      # Required external-service credentials. Each `sync: false` shows up
+      # as an empty field in the Render dashboard for you to fill in.
+      # - Stripe keys are required for billing/checkout/webhooks.
+      # - OPENAI_API_KEY is required for Whisper (paid-plan feature). If
+      #   omitted, translation falls back to the free Google path.
+      # - PROXY_URL is required in production — Render egress IPs get 429'd
+      #   by YouTube without one.
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET

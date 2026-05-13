@@ -11,21 +11,17 @@ import type { Segment } from './formatters';
  * Translate transcript segments to a target language while preserving the
  * timing structure (start + duration).
  *
- * Three modes, picked at request time:
+ * Two paths, picked at request time:
  *
- *  1. STUB (`STUB_TRANSLATION=true`) — prefix each segment with `[src→tgt]`
- *     and return as-is. No external calls. Cheapest dev path; obviously not
- *     a real translation.
- *  2. OpenAI (`STUB_TRANSLATION=false` AND `OPENAI_API_KEY` set) — single
- *     batched JSON call to gpt-4o-mini. High quality, costs real money.
- *  3. Google Translate (`STUB_TRANSLATION=false` AND no OpenAI key) — uses
- *     the unofficial `google-translate-api-x` library. Free, no key
- *     required, decent quality. This is the default zero-config path: flip
- *     the stub flag and translation Just Works.
+ *  1. OpenAI (`OPENAI_API_KEY` set) — single batched JSON call to
+ *     gpt-4o-mini. High quality, costs real money.
+ *  2. Google Translate (no OpenAI key) — uses the unofficial
+ *     `google-translate-api-x` library. Free, no key required, decent
+ *     quality.
  *
- * On any real-mode failure we fall back to the stub instead of erroring, so
- * the user still gets a usable response and we surface
- * `translation_stubbed: true` on the API envelope.
+ * On OpenAI failure we fall back to Google for the same request. If Google
+ * also fails (or was the only path and failed), the error propagates to the
+ * caller — we no longer mask failures with a placeholder.
  */
 
 const TRANSLATION_LANGUAGE_NAMES: Record<string, string> = {
@@ -86,8 +82,6 @@ export interface TranslateResult {
   segments: Segment[];
   /** Full text joined from translated segments, for the `transcript` field. */
   fullText: string;
-  /** True when we used real OpenAI; false when the stub ran. */
-  real: boolean;
 }
 
 export async function translateSegments(
@@ -96,30 +90,20 @@ export async function translateSegments(
   targetLang: string,
 ): Promise<TranslateResult> {
   if (segments.length === 0) {
-    return { segments: [], fullText: '', real: false };
+    return { segments: [], fullText: '' };
   }
   if (sourceLang === targetLang) {
     // No-op: caller should usually skip this entirely, but handle defensively.
     return {
       segments,
       fullText: segments.map((s) => s.text).join(' '),
-      real: false,
     };
   }
 
-  if (config.STUB_TRANSLATION) {
-    logger.info(
-      { sourceLang, targetLang, reason: 'STUB_TRANSLATION=true' },
-      'Translator: using stub',
-    );
-    return stubTranslate(segments, sourceLang, targetLang);
-  }
-
-  // Real mode. Prefer OpenAI when a key is available, otherwise use the
-  // free Google Translate fallback. We log the chosen path on entry so
-  // the cascade is visible from logs even when the primary succeeds —
-  // otherwise "did OpenAI run?" is unanswerable without timing-side
-  // signals.
+  // Prefer OpenAI when a key is available, otherwise use the free Google
+  // Translate fallback. We log the chosen path on entry so the cascade is
+  // visible from logs even when the primary succeeds — otherwise "did
+  // OpenAI run?" is unanswerable without timing-side signals.
   const useOpenAI = !!config.OPENAI_API_KEY;
   logger.info(
     {
@@ -136,42 +120,17 @@ export async function translateSegments(
       ? await openAITranslate(segments, sourceLang, targetLang)
       : await googleTranslate(segments, sourceLang, targetLang);
   } catch (err) {
-    logger.error(
-      { err, sourceLang, targetLang, segmentCount: segments.length, useOpenAI },
-      'Primary translator failed; trying alternate / stub',
-    );
     // If OpenAI was first choice and broke, try Google as a secondary path
-    // before giving up. If we were already on Google, stub.
+    // before giving up. If we were already on Google, the error propagates.
     if (useOpenAI) {
-      try {
-        logger.info(
-          { sourceLang, targetLang },
-          'Translator: falling back from OpenAI to Google',
-        );
-        return await googleTranslate(segments, sourceLang, targetLang);
-      } catch (err2) {
-        logger.error(
-          { err: err2, sourceLang, targetLang },
-          'Google Translate fallback also failed; using stub',
-        );
-      }
+      logger.error(
+        { err, sourceLang, targetLang, segmentCount: segments.length },
+        'OpenAI translator failed; falling back to Google',
+      );
+      return await googleTranslate(segments, sourceLang, targetLang);
     }
-    return stubTranslate(segments, sourceLang, targetLang);
+    throw err;
   }
-}
-
-function stubTranslate(
-  segments: Segment[],
-  sourceLang: string,
-  targetLang: string,
-): TranslateResult {
-  const prefix = `[${sourceLang}→${targetLang}]`;
-  const translated = segments.map((s) => ({ ...s, text: `${prefix} ${s.text}` }));
-  return {
-    segments: translated,
-    fullText: translated.map((s) => s.text).join(' '),
-    real: false,
-  };
 }
 
 let openai: OpenAI | null = null;
@@ -238,7 +197,6 @@ async function openAITranslate(
   return {
     segments: translated,
     fullText: translated.map((s) => s.text).join(' '),
-    real: true,
   };
 }
 
@@ -299,7 +257,6 @@ async function googleTranslate(
   return {
     segments: translated,
     fullText: translated.map((s) => s.text).join(' '),
-    real: true,
   };
 }
 

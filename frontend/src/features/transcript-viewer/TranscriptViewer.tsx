@@ -238,7 +238,6 @@ export function TranscriptViewer({
             {data.translated_to && (
               <Badge className="bg-blue-600 hover:bg-blue-600 text-white">
                 Translated {data.original_language} → {data.translated_to}
-                {data.translation_stubbed ? ' (stub)' : ''}
               </Badge>
             )}
           </div>
