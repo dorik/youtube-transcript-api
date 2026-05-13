@@ -62,6 +62,18 @@ export function TranscriptViewer({
   // actually changes, so re-render cost stays modest.
   const [currentTime, setCurrentTime] = useState(0);
 
+  // Some videos can't be embedded — the owner disabled embedding (common for
+  // music-label channels) or the video has been removed. The YouTube iframe
+  // renders a "Video unavailable" message in that case; we swap to a clean
+  // thumbnail + "Watch on YouTube" CTA instead. Reset on video change so a
+  // navigation away clears the prior failure.
+  const [embedError, setEmbedError] = useState<
+    null | { embedDisabled: boolean; removed: boolean }
+  >(null);
+  useEffect(() => {
+    setEmbedError(null);
+  }, [data.video_id]);
+
   // Subtitle overlay settings, persisted to localStorage.
   const [subtitleSettings, setSubtitleSettings] = useState<SubtitleSettings>(
     DEFAULT_SUBTITLE_SETTINGS,
@@ -117,12 +129,22 @@ export function TranscriptViewer({
     let cancelled = false;
     let handle: PlayerHandle | null = null;
 
-    mountPlayer(wrapper, data.video_id, (t) => {
-      if (cancelled) return;
-      setCurrentTime(t);
-      const idx = findActiveSegment(segmentsRef.current, t);
-      setActiveIndex((prev) => (prev === idx ? prev : idx));
-    })
+    mountPlayer(
+      wrapper,
+      data.video_id,
+      (t) => {
+        if (cancelled) return;
+        setCurrentTime(t);
+        const idx = findActiveSegment(segmentsRef.current, t);
+        setActiveIndex((prev) => (prev === idx ? prev : idx));
+      },
+      {
+        onError: (e) => {
+          if (cancelled) return;
+          setEmbedError({embedDisabled: e.embedDisabled, removed: e.removed});
+        },
+      },
+    )
       .then((h) => {
         if (cancelled) {
           h.destroy();
@@ -311,16 +333,31 @@ export function TranscriptViewer({
             through to YouTube's controls. */}
         <div>
           <div className="relative aspect-video bg-zinc-900 rounded-md overflow-hidden">
+            {/* React-owned wrapper is always mounted (the YT SDK needs a stable
+                DOM target). When the embed errors out, we layer a graceful
+                fallback card on top so the user sees a clean state instead
+                of YouTube's "Video unavailable" iframe message. */}
             <div ref={playerWrapperRef} className="w-full h-full" />
-            <SubtitleOverlay
-              segments={segments}
-              currentTime={currentTime}
-              settings={subtitleSettings}
-            />
+            {embedError && (
+              <EmbedFallback
+                videoId={data.video_id}
+                title={data.title}
+                channel={data.channel}
+                reason={embedError}
+              />
+            )}
+            {!embedError && (
+              <SubtitleOverlay
+                segments={segments}
+                currentTime={currentTime}
+                settings={subtitleSettings}
+              />
+            )}
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            Click any line on the right to jump to that timestamp. The active
-            line highlights as the video plays.
+            {embedError
+              ? 'Inline playback isn’t available for this video, but the transcript and timestamps still work.'
+              : 'Click any line on the right to jump to that timestamp. The active line highlights as the video plays.'}
           </p>
         </div>
 
@@ -464,6 +501,61 @@ export function TranscriptViewer({
             Load another video
           </Link>
         </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Fallback card rendered on top of the (silent) YouTube iframe when embed
+ * playback isn't possible — typically the channel owner has disabled
+ * embedding (codes 101/150) or the video was removed (100). The transcript
+ * pane is unaffected; this only swaps the player tile for a static thumbnail
+ * + "Watch on YouTube" CTA so the user has somewhere to go.
+ */
+function EmbedFallback({
+  videoId,
+  title,
+  channel,
+  reason,
+}: {
+  videoId: string;
+  title: string;
+  channel: string;
+  reason: { embedDisabled: boolean; removed: boolean };
+}) {
+  // YouTube's hqdefault thumbnail is the most reliable size: present for
+  // every uploaded video (including age-gated and embed-disabled ones).
+  const thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const message = reason.removed
+    ? 'This video has been removed or made private on YouTube.'
+    : reason.embedDisabled
+      ? 'The video owner has disabled inline playback.'
+      : 'This video can’t be played inline.';
+
+  return (
+    <div className="absolute inset-0 flex flex-col bg-zinc-900 text-zinc-100">
+      <div className="relative flex-1 overflow-hidden">
+        {/* eslint-disable-next-line @next/next/no-img-element -- external thumb, no Next/Image optimization wanted here */}
+        <img
+          src={thumb}
+          alt={title}
+          className="h-full w-full object-cover opacity-60"
+        />
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
+          <p className="max-w-sm text-sm font-medium">{message}</p>
+          <Button asChild size="sm" variant="secondary">
+            <a href={watchUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="mr-1.5 h-4 w-4" />
+              Watch on YouTube
+            </a>
+          </Button>
+        </div>
+      </div>
+      <div className="border-t border-zinc-800 px-3 py-2 text-xs text-zinc-400">
+        <span className="font-medium text-zinc-200">{title}</span>
+        <span className="ml-2">· {channel}</span>
       </div>
     </div>
   );

@@ -110,9 +110,17 @@ export function ResultsCard({
             if (translateTo !== 'none') qs.set('translate_to', translateTo);
             const search = qs.toString();
             const href = `/dashboard/transcripts/${videoId}${search ? `?${search}` : ''}`;
+            // Bulk runs (playlist/channel) end up with N results in the tab
+            // strip; opening one in the viewer with a same-tab nav drops the
+            // other N-1 from the screen. Open in a new tab when there's more
+            // than one result so the playground stays available.
+            const openInNewTab = (results?.length ?? 0) > 1;
             return (
               <Link
                 href={href}
+                {...(openInNewTab
+                  ? {target: '_blank', rel: 'noreferrer'}
+                  : {})}
                 className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
               >
                 Open in viewer
