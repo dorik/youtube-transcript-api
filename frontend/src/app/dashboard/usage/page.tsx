@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useUsageQuery } from '@/features/usage';
+import { useUsageQuery, VideoCell, SourceCell, FormatCell } from '@/features/usage';
 
 // Recharts is ~95 KB gz. Code-split so the rest of the dashboard doesn't
 // pay for it. ssr:false because it depends on the DOM (ResponsiveContainer
@@ -86,10 +86,14 @@ export default function UsagePage() {
                         {new Date(r.created_at).toLocaleString()}
                       </td>
                       <td className="py-2 pr-4 font-mono text-xs">{r.endpoint}</td>
-                      <td className="py-2 pr-4 font-mono text-xs">{r.video_id ?? '—'}</td>
-                      <td className="py-2 pr-4">{r.format ?? '—'}</td>
+                      <td className="py-2 pr-4 font-mono text-xs">
+                        <VideoCell row={r} />
+                      </td>
                       <td className="py-2 pr-4">
-                        {r.cache_hit ? 'cached' : r.transcript_source ?? '—'}
+                        <FormatCell row={r} />
+                      </td>
+                      <td className="py-2 pr-4">
+                        <SourceCell row={r} />
                       </td>
                       <td className="py-2 pr-4">{r.status_code}</td>
                       <td className="py-2 pr-4 text-right text-muted-foreground">

@@ -5,9 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { useBillingSubscriptionQuery } from '@/features/billing';
-import { useUsageQuery } from '@/features/usage';
+import { useUsageQuery, VideoCell, SourceCell } from '@/features/usage';
 import { formatDate, formatRelativeTime } from '@/lib/format';
-import type { UsageRecentEntry } from '@/lib/api';
 
 export default function OverviewPage() {
   const billingQuery = useBillingSubscriptionQuery();
@@ -103,7 +102,9 @@ export default function OverviewPage() {
                       <td className="py-2 pr-4 whitespace-nowrap text-muted-foreground">
                         {formatRelativeTime(r.created_at)}
                       </td>
-                      <td className="py-2 pr-4 font-mono text-xs">{r.video_id ?? '—'}</td>
+                      <td className="py-2 pr-4 font-mono text-xs">
+                        <VideoCell row={r} />
+                      </td>
                       <td className="py-2 pr-4">
                         <SourceCell row={r} />
                       </td>
@@ -168,32 +169,4 @@ function StatusBadge({ status }: { status: number }) {
   );
 }
 
-/**
- * Show what produced the transcript. We no longer surface cache-hit as a
- * separate chip — the Credits column already tells that story (0 for a
- * cache hit, 1 for fresh work). Failed requests have no source, so the
- * error code goes here instead.
- */
-function SourceCell({ row }: { row: UsageRecentEntry }) {
-  if (row.status_code >= 400) {
-    return (
-      <span className="font-mono text-xs text-red-700">
-        {row.error_code ?? 'error'}
-      </span>
-    );
-  }
-
-  // We label the Whisper path as "OpenAI" in the UI because that's the
-  // service name the user recognizes — Whisper is the model, OpenAI is the
-  // vendor. Stored value in `api_requests.transcript_source` stays
-  // `'whisper'` so dashboards / queries keep working.
-  const sourceLabel =
-    row.transcript_source === 'whisper'
-      ? 'OpenAI'
-      : row.transcript_source === 'native_captions'
-        ? 'native'
-        : null;
-
-  return <span>{sourceLabel ?? '—'}</span>;
-}
 

@@ -115,17 +115,21 @@ export default function DocsPage() {
 
         <Section id="browse" title="Browse endpoints">
           <p>
-            The same bearer key also unlocks lightweight YouTube discovery endpoints.
-            Browse calls cost one credit, except <code>/v1/channel/latest</code>, which is free
-            for monitoring workflows.
+            The same bearer key unlocks lightweight YouTube discovery endpoints
+            and the bulk-transcript endpoints. Discovery (list-only) endpoints
+            charge one credit per video returned. Bulk-transcript endpoints
+            charge one credit per transcript delivered (cache hits are free).
+            Single-video <code>/v1/video/metadata</code> is one credit.
           </p>
           <ParamTable
             rows={[
               { name: 'GET /v1/search', type: 'q, type, limit', required: true, description: 'Search YouTube videos, channels, or playlists.' },
               { name: 'GET /v1/channel/search', type: 'channel, q, limit', required: true, description: 'Search videos inside a channel URL, ID, or @handle.' },
               { name: 'GET /v1/channel/videos', type: 'channel, limit', required: true, description: 'List videos from a channel.' },
-              { name: 'GET /v1/channel/latest', type: 'channel, limit', required: true, description: 'List latest channel uploads. No credit charged.' },
+              { name: 'GET /v1/channel/latest', type: 'channel, limit', required: true, description: 'List latest channel uploads.' },
               { name: 'GET /v1/playlist/videos', type: 'playlist, limit', required: true, description: 'Expand a YouTube playlist into video records.' },
+              { name: 'GET /v1/playlist/transcripts', type: 'playlist, limit, format, language, native_only, translate_to', required: true, description: 'Expand a playlist AND fetch a transcript per video in one call. Limit capped at 20. One credit per transcript delivered.' },
+              { name: 'GET /v1/channel/transcripts', type: 'channel, mode (latest|videos|search), q?, limit, format, language, native_only, translate_to', required: true, description: 'Expand a channel listing AND fetch a transcript per video in one call. Limit capped at 20. One credit per transcript delivered.' },
               { name: 'GET /v1/video/metadata', type: 'url or video_id', required: true, description: 'Return title, channel, thumbnail, and canonical URL.' },
             ]}
           />

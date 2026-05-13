@@ -31,13 +31,15 @@ import {
 	useFetchTranscriptWithBearerMutation,
 } from '@/features/transcripts';
 import {
-	useChannelLatestMutation,
-	useChannelSearchMutation,
-	useChannelVideosMutation,
-	usePlaylistVideosMutation,
+	useChannelTranscriptsMutation,
+	usePlaylistTranscriptsMutation,
+} from '@/features/youtube';
+import type {
+	BulkTranscriptItem,
+	ChannelTranscriptsMode,
 } from '@/features/youtube';
 import {FORMATS, type Format, type BulkResultEntry} from './types';
-import {buildCurlPreview, parseVideoLines, videosToUrls} from './utils';
+import {buildCurlPreview, parseVideoLines} from './utils';
 import {ToggleRow} from './ToggleRow';
 import {ResultsCard} from './ResultsCard';
 
@@ -79,10 +81,11 @@ export function PlaygroundClient() {
 	const apiKeysQuery = useApiKeysQuery();
 	const fetchAsUserMutation = useFetchTranscriptAsUserMutation();
 	const fetchWithBearerMutation = useFetchTranscriptWithBearerMutation();
-	const playlistVideosMutation = usePlaylistVideosMutation();
-	const channelLatestMutation = useChannelLatestMutation();
-	const channelVideosMutation = useChannelVideosMutation();
-	const channelSearchMutation = useChannelSearchMutation();
+	// Bulk endpoints: server-side expansion + transcripts. Replaces the prior
+	// two-step pattern (list → loop per-video transcripts) for playlist and
+	// channel tabs, so the playground hits the API exactly once per submit.
+	const playlistTranscriptsMutation = usePlaylistTranscriptsMutation();
+	const channelTranscriptsMutation = useChannelTranscriptsMutation();
 	const serverKeys = useMemo(
 		() => apiKeysQuery.data?.keys.filter((k) => !k.is_revoked) ?? [],
 		[apiKeysQuery.data?.keys],
@@ -130,19 +133,63 @@ export function PlaygroundClient() {
 
 	// The cURL we display always shows the public-API form, regardless of
 	// which auth path the in-browser request takes — that's the snippet a
-	// developer would paste into their own code.
-	const curlPreview = useMemo(
-		() =>
-			buildCurlPreview({
-				firstUrl: videoList[0]?.url ?? null,
-				format,
-				language,
-				nativeOnly,
-				translateTo,
-				bearerPlaintext: selectedPlaintext,
-			}),
-		[videoList, format, language, nativeOnly, translateTo, selectedPlaintext],
-	);
+	// developer would paste into their own code. Switches endpoint based on
+	// the active tab: video → /v1/transcript, playlist → /v1/playlist/transcripts,
+	// channel → /v1/channel/transcripts (mode-aware). The transcript options
+	// (format/language/native_only/translate_to) are shared across all
+	// variants because the bulk endpoints accept the same per-item options.
+	const curlPreview = useMemo(() => {
+		const transcriptOpts = {
+			format,
+			language,
+			nativeOnly,
+			translateTo,
+			bearerPlaintext: selectedPlaintext,
+		};
+		if (tab === 'playlist') {
+			return buildCurlPreview({
+				mode: 'playlist',
+				playlist: playlistInput.trim(),
+				limit: browseLimit,
+				...transcriptOpts,
+			});
+		}
+		if (tab === 'channel') {
+			if (channelMode === 'search') {
+				return buildCurlPreview({
+					mode: 'channel-search',
+					channel: channelInput.trim(),
+					query: channelQuery.trim(),
+					limit: browseLimit,
+					...transcriptOpts,
+				});
+			}
+			return buildCurlPreview({
+				mode: channelMode === 'latest' ? 'channel-latest' : 'channel-videos',
+				channel: channelInput.trim(),
+				limit: browseLimit,
+				...transcriptOpts,
+			});
+		}
+		return buildCurlPreview({
+			mode: 'video',
+			firstUrl: videoList[0]?.url ?? null,
+			...transcriptOpts,
+		});
+	}, [
+		tab,
+		channelMode,
+		playlistInput,
+		channelInput,
+		channelQuery,
+		browseLimit,
+		videoList,
+		format,
+		language,
+		nativeOnly,
+		translateTo,
+		selectedPlaintext,
+	]);
 
 	async function onSubmit(e: React.FormEvent) {
 		e.preventDefault();
@@ -160,23 +207,31 @@ export function PlaygroundClient() {
 		setResults([]);
 		setActiveResultIdx(0);
 
-		let urls: Array<{url: string}> = [];
-		try {
-			urls = await resolveInputVideos();
-		} catch (err) {
-			toast.error(getApiErrorMessage(err, 'Could not load videos'));
-			setSubmitting(false);
+		// Playlist / channel: server-side bulk endpoint does list expansion +
+		// per-video transcripts in one HTTP call. The response items map
+		// directly onto BulkResultEntry — no client-side loop required.
+		if (tab === 'playlist' || tab === 'channel') {
+			try {
+				const items = await fetchBulkTranscripts();
+				setResults(items.map(bulkItemToEntry));
+			} catch (err) {
+				toast.error(getApiErrorMessage(err, 'Bulk transcripts failed'));
+			} finally {
+				setSubmitting(false);
+			}
 			return;
 		}
 
-		if (urls.length === 0) {
-			toast.error('No videos found.');
+		// Free-form video list: kept as a client-side loop because there's no
+		// equivalent bulk endpoint for arbitrary URLs (potential follow-up).
+		if (videoList.length === 0) {
+			toast.error('Add at least one YouTube URL or video ID.');
 			setSubmitting(false);
 			return;
 		}
 
 		const acc: BulkResultEntry[] = [];
-		for (const v of urls) {
+		for (const v of videoList) {
 			try {
 				const params = {
 					url: v.url,
@@ -205,49 +260,55 @@ export function PlaygroundClient() {
 		setSubmitting(false);
 	}
 
-	async function resolveInputVideos(): Promise<Array<{url: string}>> {
-		if (tab === 'videos') {
-			if (videoList.length === 0) {
-				throw new Error('Add at least one YouTube URL or video ID.');
-			}
-			return videoList;
-		}
-
+	async function fetchBulkTranscripts(): Promise<BulkTranscriptItem[]> {
 		const bearer = selectedPlaintext;
 		if (!bearer) throw new Error('A plaintext API key is required.');
+
+		// Shared transcript options between playlist and channel paths.
+		const opts = {
+			bearer,
+			limit: browseLimit,
+			format,
+			language: language === 'auto' ? undefined : language,
+			native_only: nativeOnly,
+			translate_to: translateTo === 'none' ? undefined : translateTo,
+		};
 
 		if (tab === 'playlist') {
 			if (!playlistInput.trim())
 				throw new Error('Paste a playlist URL or ID.');
-			const res = await playlistVideosMutation.mutateAsync({
-				bearer,
+			const res = await playlistTranscriptsMutation.mutateAsync({
+				...opts,
 				playlist: playlistInput.trim(),
-				limit: browseLimit,
 			});
-			return videosToUrls(res.items);
+			return res.items;
 		}
 
+		// tab === 'channel'
 		if (!channelInput.trim())
 			throw new Error('Paste a channel URL, ID, or handle.');
-		const base = {
-			bearer,
-			channel: channelInput.trim(),
-			limit: browseLimit,
-		};
-		if (channelMode === 'search') {
-			if (!channelQuery.trim())
-				throw new Error('Enter a channel search query.');
-			const res = await channelSearchMutation.mutateAsync({
-				...base,
-				q: channelQuery.trim(),
-			});
-			return videosToUrls(res.items);
+		const mode: ChannelTranscriptsMode = channelMode;
+		if (mode === 'search' && !channelQuery.trim()) {
+			throw new Error('Enter a channel search query.');
 		}
-		const res =
-			channelMode === 'latest'
-				? await channelLatestMutation.mutateAsync(base)
-				: await channelVideosMutation.mutateAsync(base);
-		return videosToUrls(res.items);
+		const res = await channelTranscriptsMutation.mutateAsync({
+			...opts,
+			channel: channelInput.trim(),
+			mode,
+			...(mode === 'search' ? {q: channelQuery.trim()} : {}),
+		});
+		return res.items;
+	}
+
+	function bulkItemToEntry(item: BulkTranscriptItem): BulkResultEntry {
+		if (item.ok && item.transcript) {
+			return {url: item.url, ok: true, data: item.transcript};
+		}
+		return {
+			url: item.url,
+			ok: false,
+			error: item.error?.message ?? 'Request failed',
+		};
 	}
 
 	return (
