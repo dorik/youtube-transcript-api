@@ -86,12 +86,13 @@ export async function transcribeWithWhisper(
 				{timeout: 120_000},
 			);
 		} catch (err) {
+			logger.info({error: err}, 'billal');
 			// Route bot-challenges / video-removed / etc. through the shared
 			// mapper. Without this, the raw execFile rejection bubbled up to the
 			// express error handler as an opaque 500 ("Unhandled error").
 			throw mapYtDlpError(err, videoId, 'whisper-audio');
 		}
-
+		logger.info({audioPath, exists: fs.existsSync(audioPath)}, 'billal');
 		const stat = fs.statSync(audioPath);
 		if (stat.size > 25 * 1024 * 1024) {
 			throw new Error(
