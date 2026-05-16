@@ -4,6 +4,11 @@ import { sessionAuth } from '../middleware/sessionAuth';
 import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
+import {
+  listPlaylistVideos,
+  listChannelVideos,
+} from '../services/youtubeBrowseService';
+import { extractVideoId } from '../utils/youtubeUrl';
 
 /**
  * `/me/transcripts` — cookie-authed async transcript queue for the dashboard.
@@ -67,6 +72,107 @@ meTranscriptsRouter.get('/', async (req, res, next) => {
     const { limit, offset } = parsed.data;
     const result = await svc.listUserRequests(req.user!.id, limit, offset);
     res.json({ ...result, limit, offset });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const BulkSchema = z.object({
+  // Exactly one of these identifies the batch source.
+  playlist: z.string().min(1).optional(),
+  channel: z.string().min(1).optional(),
+  urls: z.array(z.string().min(1)).min(1).max(svc.BATCH_VIDEO_CAP).optional(),
+  format: z
+    .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
+    .default('json'),
+  language: z.string().min(2).max(10).optional(),
+  native_only: z.boolean().optional(),
+  translate_to: z.string().min(2).max(10).optional(),
+  limit: z.coerce.number().int().min(1).max(svc.BATCH_VIDEO_CAP).default(50),
+});
+
+meTranscriptsRouter.post('/bulk', async (req, res, next) => {
+  try {
+    const parsed = BulkSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid request body', {
+        issues: parsed.error.flatten().fieldErrors,
+      });
+    }
+    const p = parsed.data;
+    const config = {
+      format: p.format,
+      language: p.language,
+      native_only: p.native_only,
+      translate_to: p.translate_to,
+    };
+
+    let kind: 'playlist' | 'channel' | 'videos';
+    let sourceUrl: string | null = null;
+    let label: string | null = null;
+    let videos: svc.BatchVideoInput[];
+
+    if (p.playlist) {
+      kind = 'playlist';
+      sourceUrl = p.playlist;
+      const listing = await listPlaylistVideos({
+        playlist: p.playlist,
+        limit: p.limit,
+      });
+      videos = listing.items.map((v) => ({
+        url: v.url,
+        video_id: v.video_id,
+        title: v.title,
+        channel: v.channel,
+        thumbnail_url: v.thumbnail_url,
+      }));
+    } else if (p.channel) {
+      kind = 'channel';
+      sourceUrl = p.channel;
+      label = p.channel;
+      const listing = await listChannelVideos({
+        channel: p.channel,
+        limit: p.limit,
+      });
+      videos = listing.items.map((v) => ({
+        url: v.url,
+        video_id: v.video_id,
+        title: v.title,
+        channel: v.channel,
+        thumbnail_url: v.thumbnail_url,
+      }));
+    } else if (p.urls) {
+      kind = 'videos';
+      videos = p.urls.map((url) => ({ url, video_id: extractVideoId(url) }));
+    } else {
+      throw new ValidationError('Provide one of: playlist, channel, urls');
+    }
+
+    const result = await svc.enqueueBatch({
+      userId: req.user!.id,
+      kind,
+      sourceUrl,
+      label,
+      videos,
+      config,
+    });
+    res.status(202).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+meTranscriptsRouter.get('/batches/:id', async (req, res, next) => {
+  try {
+    const batch = await svc.getBatch(req.params.id, req.user!.id);
+    if (!batch) {
+      throw new NotFoundError('Batch not found');
+    }
+    const [progress, requests] = await Promise.all([
+      svc.getBatchProgress(batch.id),
+      svc.listBatchRequests(batch.id),
+    ]);
+    res.json({ batch, progress, requests });
   } catch (err) {
     next(err);
   }
