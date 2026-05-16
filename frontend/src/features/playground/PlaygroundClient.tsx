@@ -25,8 +25,13 @@ import {
 	TARGET_LANGUAGE_OPTIONS,
 } from '@/lib/languages';
 import { useApiKeysQuery } from '@/features/api-keys';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { api } from '@/lib/api';
-import type { TranscriptRequest } from '@/lib/api';
+import type {
+	TranscriptRequest,
+	BatchCreateResponse,
+	BatchDetailResponse,
+} from '@/lib/api';
 import { FORMATS, type Format, type BulkResultEntry } from './types';
 import { buildCurlPreview, parseVideoLines } from './utils';
 import { ToggleRow } from './ToggleRow';
@@ -59,6 +64,35 @@ async function runOne(
 	return current;
 }
 
+/**
+ * Enqueue a playlist/channel/URL-list batch via POST /v1/transcripts/bulk, then
+ * poll GET /v1/transcripts/batches/:id until every entry reaches a terminal
+ * status. Returns the final request list.
+ */
+async function runBulk(
+	bearer: string,
+	body: Record<string, unknown>,
+): Promise<TranscriptRequest[]> {
+	const created = await api<BatchCreateResponse>('/v1/transcripts/bulk', {
+		method: 'POST',
+		body,
+		bearer,
+	});
+	const batchId = created.batch.id;
+	let requests = created.requests;
+	while (
+		requests.some((r) => r.status === 'queued' || r.status === 'processing')
+	) {
+		await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+		const detail = await api<BatchDetailResponse>(
+			`/v1/transcripts/batches/${batchId}`,
+			{ bearer },
+		);
+		requests = detail.requests;
+	}
+	return requests;
+}
+
 export function PlaygroundClient() {
 	// Start empty — the Textarea's `placeholder` already shows an example
 	// URL so users can see the expected format without it being a "real"
@@ -78,6 +112,15 @@ export function PlaygroundClient() {
 	const [selectedKeyId, setSelectedKeyId] = useState<string>('');
 	const [manualKey, setManualKey] = useState('');
 	const [showManual, setShowManual] = useState(false);
+
+	const [tab, setTab] = useState<'videos' | 'playlist' | 'channel'>('videos');
+	const [playlistInput, setPlaylistInput] = useState('');
+	const [channelInput, setChannelInput] = useState('');
+	const [channelQuery, setChannelQuery] = useState('');
+	const [channelMode, setChannelMode] = useState<
+		'videos' | 'latest' | 'search'
+	>('latest');
+	const [browseLimit, setBrowseLimit] = useState(5);
 
 	const [submitting, setSubmitting] = useState(false);
 	const [results, setResults] = useState<BulkResultEntry[] | null>(null);
@@ -133,22 +176,51 @@ export function PlaygroundClient() {
 			? 'Select an API key with a stored plaintext value to use the public API.'
 			: undefined;
 
-	// The cURL we display always shows the public-API form (POST /v1/transcript).
-	// The transcript options (format/language/native_only/translate_to) are
-	// included in the JSON body.
-	const curlPreview = useMemo(
-		() =>
-			buildCurlPreview({
-				mode: 'video',
-				firstUrl: videoList[0]?.url ?? null,
-				format,
-				language,
-				nativeOnly,
-				translateTo,
-				bearerPlaintext: selectedPlaintext,
-			}),
-		[videoList, format, language, nativeOnly, translateTo, selectedPlaintext],
-	);
+	const curlPreview = useMemo(() => {
+		const opts = {
+			format,
+			language,
+			nativeOnly,
+			translateTo,
+			bearerPlaintext: selectedPlaintext,
+		};
+		if (tab === 'playlist') {
+			return buildCurlPreview({
+				mode: 'playlist',
+				playlist: playlistInput,
+				limit: browseLimit,
+				...opts,
+			});
+		}
+		if (tab === 'channel') {
+			return buildCurlPreview({
+				mode: 'channel',
+				channel: channelInput,
+				channelMode,
+				channelQuery,
+				limit: browseLimit,
+				...opts,
+			});
+		}
+		return buildCurlPreview({
+			mode: 'video',
+			firstUrl: videoList[0]?.url ?? null,
+			...opts,
+		});
+	}, [
+		tab,
+		videoList,
+		playlistInput,
+		channelInput,
+		channelMode,
+		channelQuery,
+		browseLimit,
+		format,
+		language,
+		nativeOnly,
+		translateTo,
+		selectedPlaintext,
+	]);
 
 	const onSubmit = useCallback(
 		async (e: React.FormEvent) => {
@@ -159,53 +231,108 @@ export function PlaygroundClient() {
 				);
 				return;
 			}
-			if (videoList.length === 0) {
-				toast.error('Add at least one YouTube URL or video ID.');
-				return;
-			}
+
+			// Map a settled TranscriptRequest to a result row.
+			const toEntry = (r: TranscriptRequest): BulkResultEntry =>
+				r.status === 'completed' && r.result
+					? {
+							url: r.request.url,
+							ok: true,
+							data: r.result,
+							requestId: r.id,
+						}
+					: {
+							url: r.request.url,
+							ok: false,
+							error: r.error_message ?? 'Request failed',
+						};
+
 			setSubmitting(true);
 			setResults([]);
 			setActiveResultIdx(0);
 
-			const acc: BulkResultEntry[] = [];
-			for (const v of videoList) {
-				const body: Record<string, unknown> = {
-					url: v.url,
-					format,
-					language: language === 'auto' ? undefined : language,
-					native_only: nativeOnly || undefined,
-					translate_to: translateTo === 'none' ? undefined : translateTo,
-				};
-				try {
-					const current = await runOne(selectedPlaintext, body);
-					if (current.status === 'completed' && current.result) {
-						acc.push({
-							url: v.url,
-							ok: true,
-							data: current.result,
-							requestId: current.id,
-						});
-					} else {
-						acc.push({
-							url: v.url,
-							ok: false,
-							error: current.error_message ?? 'Request failed',
-						});
+			try {
+				if (tab === 'videos') {
+					if (videoList.length === 0) {
+						toast.error('Add at least one YouTube URL or video ID.');
+						setSubmitting(false);
+						return;
 					}
-				} catch (err) {
-					acc.push({
-						url: v.url,
-						ok: false,
-						error: getApiErrorMessage(err, 'Request failed'),
-					});
+					const acc: BulkResultEntry[] = [];
+					for (const v of videoList) {
+						try {
+							const current = await runOne(selectedPlaintext, {
+								url: v.url,
+								...sharedOptions(),
+							});
+							acc.push(toEntry(current));
+						} catch (err) {
+							acc.push({
+								url: v.url,
+								ok: false,
+								error: getApiErrorMessage(err, 'Request failed'),
+							});
+						}
+						setResults([...acc]);
+					}
+					return;
 				}
-				setResults([...acc]);
+
+				// Playlist / channel: one bulk POST, then poll the batch.
+				let body: Record<string, unknown>;
+				if (tab === 'playlist') {
+					if (!playlistInput.trim()) {
+						toast.error('Paste a playlist URL or ID.');
+						setSubmitting(false);
+						return;
+					}
+					body = {
+						playlist: playlistInput.trim(),
+						limit: browseLimit,
+						...sharedOptions(),
+					};
+				} else {
+					if (!channelInput.trim()) {
+						toast.error('Paste a channel URL, ID, or handle.');
+						setSubmitting(false);
+						return;
+					}
+					if (channelMode === 'search' && !channelQuery.trim()) {
+						toast.error('Enter a search query for channel search mode.');
+						setSubmitting(false);
+						return;
+					}
+					body = {
+						channel: channelInput.trim(),
+						channelMode,
+						limit: browseLimit,
+						...(channelMode === 'search'
+							? { channelQuery: channelQuery.trim() }
+							: {}),
+						...sharedOptions(),
+					};
+				}
+				try {
+					const requests = await runBulk(selectedPlaintext, body);
+					setResults(requests.map(toEntry));
+				} catch (err) {
+					toast.error(getApiErrorMessage(err, 'Could not run the batch'));
+					setResults(null);
+				}
+			} finally {
+				setSubmitting(false);
 			}
-			setSubmitting(false);
 		},
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sharedOptions closes only over format/language/nativeOnly/translateTo, which are all listed below; hoisted function reference is stable
 		[
 			selectedPlaintext,
+			tab,
 			videoList,
+			playlistInput,
+			channelInput,
+			channelMode,
+			channelQuery,
+			browseLimit,
 			format,
 			language,
 			nativeOnly,
@@ -221,6 +348,15 @@ export function PlaygroundClient() {
 			toast.error('Copy failed');
 		}
 	}, [curlPreview]);
+
+	function sharedOptions(): Record<string, unknown> {
+		return {
+			format,
+			language: language === 'auto' ? undefined : language,
+			native_only: nativeOnly || undefined,
+			translate_to: translateTo === 'none' ? undefined : translateTo,
+		};
+	}
 
 	return (
 		<div className="max-w-7xl">
@@ -435,31 +571,110 @@ export function PlaygroundClient() {
 									onChange={setShowTimestamps}
 								/>
 
-								{/* Video URLs */}
-								<div className="space-y-2">
-									<Label htmlFor="urls">
-										YouTube video URLs or IDs (one per line)
-									</Label>
-									<Textarea
-										id="urls"
-										rows={5}
-										placeholder={
-											'https://youtu.be/dQw4w9WgXcQ\nhttps://www.youtube.com/watch?v=...'
-										}
-										value={videosText}
-										onChange={(e) =>
-											setVideosText(e.target.value)
-										}
-										className="font-mono text-sm"
-									/>
-									<p className="text-xs text-muted-foreground">
-										{videoList.length} video
-										{videoList.length === 1
-											? ''
-											: 's'}{' '}
-										detected
-									</p>
-								</div>
+								<Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+									<TabsList className="w-full grid grid-cols-3">
+										<TabsTrigger value="videos">Videos</TabsTrigger>
+										<TabsTrigger value="playlist">Playlist</TabsTrigger>
+										<TabsTrigger value="channel">Channel</TabsTrigger>
+									</TabsList>
+
+									<TabsContent value="videos" className="mt-3 space-y-2">
+										<Label htmlFor="urls">
+											YouTube video URLs or IDs (one per line)
+										</Label>
+										<Textarea
+											id="urls"
+											rows={5}
+											placeholder={
+												'https://youtu.be/dQw4w9WgXcQ\nhttps://www.youtube.com/watch?v=...'
+											}
+											value={videosText}
+											onChange={(e) => setVideosText(e.target.value)}
+											className="font-mono text-sm"
+										/>
+										<p className="text-xs text-muted-foreground">
+											{videoList.length} video{videoList.length === 1 ? '' : 's'}{' '}
+											detected
+										</p>
+									</TabsContent>
+
+									<TabsContent value="playlist" className="mt-3 space-y-2">
+										<Label htmlFor="playlist">Playlist URL or ID</Label>
+										<Input
+											id="playlist"
+											placeholder="https://www.youtube.com/playlist?list=..."
+											value={playlistInput}
+											onChange={(e) => setPlaylistInput(e.target.value)}
+										/>
+									</TabsContent>
+
+									<TabsContent value="channel" className="mt-3 space-y-3">
+										<div className="space-y-2">
+											<Label htmlFor="channel">Channel URL, ID, or handle</Label>
+											<Input
+												id="channel"
+												placeholder="@mkbhd or https://www.youtube.com/@mkbhd"
+												value={channelInput}
+												onChange={(e) => setChannelInput(e.target.value)}
+											/>
+										</div>
+										<div className="space-y-2">
+											<Label>Channel mode</Label>
+											<Select
+												value={channelMode}
+												onValueChange={(v) =>
+													setChannelMode(v as typeof channelMode)
+												}
+											>
+												<SelectTrigger>
+													<SelectValue />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="latest">Latest uploads</SelectItem>
+													<SelectItem value="videos">All videos</SelectItem>
+													<SelectItem value="search">Search in channel</SelectItem>
+												</SelectContent>
+											</Select>
+										</div>
+										{channelMode === 'search' && (
+											<div className="space-y-2">
+												<Label htmlFor="channel-query">Search query</Label>
+												<Input
+													id="channel-query"
+													placeholder="interview, tutorial, launch..."
+													value={channelQuery}
+													onChange={(e) => setChannelQuery(e.target.value)}
+												/>
+											</div>
+										)}
+									</TabsContent>
+								</Tabs>
+
+								{tab !== 'videos' && (
+									<div className="grid gap-3 sm:grid-cols-[1fr_96px] sm:items-end">
+										<p className="text-xs text-muted-foreground">
+											Expands the playlist/channel on the server, queues a transcript
+											per video, then polls until each finishes.
+										</p>
+										<div className="space-y-1">
+											<Label htmlFor="browse-limit" className="text-xs">
+												Limit
+											</Label>
+											<Input
+												id="browse-limit"
+												type="number"
+												min={1}
+												max={25}
+												value={browseLimit}
+												onChange={(e) =>
+													setBrowseLimit(
+														Math.min(25, Math.max(1, Number(e.target.value) || 1)),
+													)
+												}
+											/>
+										</div>
+									</div>
+								)}
 
 								<Button
 									type="submit"
