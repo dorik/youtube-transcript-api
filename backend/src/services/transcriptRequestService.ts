@@ -85,6 +85,10 @@ export async function getUserRequest(
 export interface ListRequestsResult {
   items: TranscriptRequestRow[];
   total: number;
+  /** Batch metadata for every batch referenced by `items`, so the caller can
+   *  render a batch header (kind, label, video count) without a per-batch
+   *  detail fetch. */
+  batches: BatchRow[];
 }
 
 export async function listUserRequests(
@@ -103,7 +107,28 @@ export async function listUserRequests(
     `SELECT COUNT(*)::int AS total FROM transcript_requests WHERE user_id = $1`,
     [userId],
   );
-  return { items: rows, total: Number(countRows[0]?.total ?? 0) };
+
+  const batchIds = [
+    ...new Set(
+      rows.map((r) => r.batch_id).filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  let batches: BatchRow[] = [];
+  if (batchIds.length > 0) {
+    const { rows: batchRows } = await pool.query<BatchRow>(
+      `SELECT id, user_id, kind, source_url, label, total, created_at
+       FROM transcript_batches
+       WHERE id = ANY($1::uuid[]) AND user_id = $2`,
+      [batchIds, userId],
+    );
+    batches = batchRows;
+  }
+
+  return {
+    items: rows,
+    total: Number(countRows[0]?.total ?? 0),
+    batches,
+  };
 }
 
 /** Count of the user's not-yet-finished requests (for the gate + cap). */

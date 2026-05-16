@@ -256,6 +256,9 @@ export interface BatchProgress {
 export interface RequestListResponse {
   items: TranscriptRequest[];
   total: number;
+  /** Metadata for every batch referenced by `items` — used to render batch
+   *  group headers without a per-batch detail fetch. */
+  batches: TranscriptBatch[];
   limit: number;
   offset: number;
 }

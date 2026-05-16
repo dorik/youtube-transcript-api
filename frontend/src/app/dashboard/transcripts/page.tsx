@@ -41,11 +41,17 @@ export default function TranscriptsPage() {
   // Build the display order: each standalone request is its own entry; the
   // rows of a batch collapse into a single batch entry positioned at the
   // batch's newest row.
+  const batches = useMemo(
+    () => listQuery.data?.batches ?? [],
+    [listQuery.data?.batches],
+  );
+
   const entries = useMemo(() => {
     const result: Array<
       | { kind: 'request'; request: TranscriptRequest }
       | { kind: 'batch'; batch: TranscriptBatch }
     > = [];
+    const batchById = new Map(batches.map((b) => [b.id, b]));
     const seenBatches = new Set<string>();
     for (const r of items) {
       if (!r.batch_id) {
@@ -54,22 +60,21 @@ export default function TranscriptsPage() {
       }
       if (seenBatches.has(r.batch_id)) continue;
       seenBatches.add(r.batch_id);
-      // The batch row carries enough to render the header; BatchGroup
-      // fetches full detail (label, progress) on expand.
-      result.push({
-        kind: 'batch',
-        batch: {
-          id: r.batch_id,
-          kind: 'videos',
-          source_url: null,
-          label: null,
-          total: 0,
-          created_at: r.created_at,
-        },
-      });
+      // Prefer the real batch metadata from the list response; fall back to a
+      // minimal placeholder only if it is somehow absent. BatchGroup fetches
+      // full progress on expand.
+      const batch: TranscriptBatch = batchById.get(r.batch_id) ?? {
+        id: r.batch_id,
+        kind: 'videos',
+        source_url: null,
+        label: null,
+        total: 0,
+        created_at: r.created_at,
+      };
+      result.push({ kind: 'batch', batch });
     }
     return result;
-  }, [items]);
+  }, [items, batches]);
 
   const handleCancel = useCallback(
     (id: string) => {
