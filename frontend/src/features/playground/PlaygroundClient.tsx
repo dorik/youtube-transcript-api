@@ -179,7 +179,12 @@ export function PlaygroundClient() {
 				try {
 					const current = await runOne(selectedPlaintext, body);
 					if (current.status === 'completed' && current.result) {
-						acc.push({ url: v.url, ok: true, data: current.result });
+						acc.push({
+							url: v.url,
+							ok: true,
+							data: current.result,
+							requestId: current.id,
+						});
 					} else {
 						acc.push({
 							url: v.url,
@@ -478,8 +483,6 @@ export function PlaygroundClient() {
 							activeIdx={activeResultIdx}
 							onSelect={setActiveResultIdx}
 							showTimestamps={showTimestamps}
-							language={language}
-							translateTo={translateTo}
 						/>
 
 						{/* cURL preview */}
