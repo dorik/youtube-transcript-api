@@ -40,6 +40,8 @@ async function processTranscribe(job: Job<TranscriptJobData>): Promise<void> {
         title: meta.title,
         channel: meta.channel,
         durationSeconds: null,
+        // Use the predictable mqdefault URL directly rather than meta.thumbnailUrl,
+        // which can vary in quality/format. meta is still used for title and channel.
         thumbnailUrl: `https://img.youtube.com/vi/${req.video_id}/mqdefault.jpg`,
       });
     } catch (err) {
@@ -110,11 +112,21 @@ export async function startWorker(): Promise<void> {
     { connection: queueConnection, concurrency: config.QUEUE_CONCURRENCY },
   );
 
-  // Fires only when a job has truly failed (retries exhausted, or thrown as
-  // UnrecoverableError). This is the single place the DB row goes `failed`.
+  // BullMQ 5.x emits `failed` on EVERY failed attempt, not only the final one.
+  // The guard below narrows it to the final outcome (no further retry will run).
   worker.on('failed', async (job, err) => {
     if (!job || job.name !== JOB_TRANSCRIBE) {
       logger.error({ err, job: job?.name }, 'Queue job failed');
+      return;
+    }
+    // BullMQ increments job.attemptsMade before emitting `failed`, so after
+    // attempt N it equals N. A job will be retried when attemptsMade is still
+    // below opts.attempts AND the error is not UnrecoverableError (which skips
+    // remaining attempts immediately). Return early on intermediate attempts so
+    // we write to the DB only once — on the truly-final failure.
+    const isUnrecoverable =
+      err instanceof UnrecoverableError || err?.name === 'UnrecoverableError';
+    if (!isUnrecoverable && job.attemptsMade < (job.opts.attempts ?? 1)) {
       return;
     }
     const requestId = job.data.requestId;
