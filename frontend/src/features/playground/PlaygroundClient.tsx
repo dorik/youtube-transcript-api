@@ -1,13 +1,13 @@
 'use client';
 
-import {useEffect, useMemo, useState} from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import {toast} from 'sonner';
-import {Copy} from 'lucide-react';
-import {Button} from '@/components/ui/button';
-import {Input} from '@/components/ui/input';
-import {Label} from '@/components/ui/label';
-import {Textarea} from '@/components/ui/textarea';
+import { toast } from 'sonner';
+import { Copy } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import {
 	Select,
 	SelectContent,
@@ -16,50 +16,54 @@ import {
 	SelectValue,
 } from '@/components/ui/select';
 import { SearchableSelect } from '@/components/ui/searchable-select';
-import {Card, CardContent, CardHeader, CardTitle} from '@/components/ui/card';
-import {Skeleton} from '@/components/ui/skeleton';
-import {Tabs, TabsContent, TabsList, TabsTrigger} from '@/components/ui/tabs';
-import {getApiErrorMessage} from '@/lib/apiError';
-import {listStashedKeys, getStashedKey} from '@/lib/key-stash';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { getApiErrorMessage } from '@/lib/apiError';
+import { listStashedKeys, getStashedKey } from '@/lib/key-stash';
 import {
 	SOURCE_LANGUAGE_OPTIONS,
 	TARGET_LANGUAGE_OPTIONS,
 } from '@/lib/languages';
-import {useApiKeysQuery} from '@/features/api-keys';
-import {
-	useFetchTranscriptAsUserMutation,
-	useFetchTranscriptWithBearerMutation,
-} from '@/features/transcripts';
-import {
-	useChannelTranscriptsMutation,
-	usePlaylistTranscriptsMutation,
-} from '@/features/youtube';
-import type {
-	BulkTranscriptItem,
-	ChannelTranscriptsMode,
-} from '@/features/youtube';
-import {FORMATS, type Format, type BulkResultEntry} from './types';
-import {buildCurlPreview, parseVideoLines} from './utils';
-import {ToggleRow} from './ToggleRow';
-import {ResultsCard} from './ResultsCard';
+import { useApiKeysQuery } from '@/features/api-keys';
+import { api } from '@/lib/api';
+import type { TranscriptRequest } from '@/lib/api';
+import { FORMATS, type Format, type BulkResultEntry } from './types';
+import { buildCurlPreview, parseVideoLines } from './utils';
+import { ToggleRow } from './ToggleRow';
+import { ResultsCard } from './ResultsCard';
 
+/** Polling interval between status checks when a request is still running. */
+const POLL_INTERVAL_MS = 2500;
 
+/**
+ * Enqueue one transcript request via the public API key, then poll
+ * GET /v1/transcript/:id until the request reaches a terminal status
+ * (`completed`, `failed`, or `canceled`).
+ */
+async function runOne(
+	bearer: string,
+	body: Record<string, unknown>,
+): Promise<TranscriptRequest> {
+	const created = await api<TranscriptRequest>('/v1/transcript', {
+		method: 'POST',
+		body,
+		bearer,
+	});
+	let current = created;
+	while (current.status === 'queued' || current.status === 'processing') {
+		await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
+		current = await api<TranscriptRequest>(`/v1/transcript/${created.id}`, {
+			bearer,
+		});
+	}
+	return current;
+}
 
 export function PlaygroundClient() {
-	const [tab, setTab] = useState<'videos' | 'playlist' | 'channel'>(
-		'videos',
-	);
 	// Start empty — the Textarea's `placeholder` already shows an example
 	// URL so users can see the expected format without it being a "real"
 	// value they have to delete before pasting their own.
 	const [videosText, setVideosText] = useState('');
-	const [playlistInput, setPlaylistInput] = useState('');
-	const [channelInput, setChannelInput] = useState('');
-	const [channelQuery, setChannelQuery] = useState('');
-	const [channelMode, setChannelMode] = useState<
-		'latest' | 'videos' | 'search'
-	>('latest');
-	const [browseLimit, setBrowseLimit] = useState(5);
 	const [format, setFormat] = useState<Format>('json');
 	const [language, setLanguage] = useState('auto');
 	const [translateTo, setTranslateTo] = useState('none');
@@ -68,8 +72,9 @@ export function PlaygroundClient() {
 
 	// API key picker — backend is the source of truth; we list real keys and
 	// look up plaintext from a browser-local stash. If the plaintext for the
-	// chosen key isn't available (e.g. created in another browser), we fall
-	// back to cookie-authed /me/transcript so the playground still works.
+	// chosen key isn't available (e.g. created in another browser), the
+	// playground requires a key with stashed plaintext (there is no
+	// cookie-auth fallback for the public /v1/transcript endpoint).
 	const [selectedKeyId, setSelectedKeyId] = useState<string>('');
 	const [manualKey, setManualKey] = useState('');
 	const [showManual, setShowManual] = useState(false);
@@ -79,13 +84,6 @@ export function PlaygroundClient() {
 	const [activeResultIdx, setActiveResultIdx] = useState(0);
 
 	const apiKeysQuery = useApiKeysQuery();
-	const fetchAsUserMutation = useFetchTranscriptAsUserMutation();
-	const fetchWithBearerMutation = useFetchTranscriptWithBearerMutation();
-	// Bulk endpoints: server-side expansion + transcripts. Replaces the prior
-	// two-step pattern (list → loop per-video transcripts) for playlist and
-	// channel tabs, so the playground hits the API exactly once per submit.
-	const playlistTranscriptsMutation = usePlaylistTranscriptsMutation();
-	const channelTranscriptsMutation = useChannelTranscriptsMutation();
 	const serverKeys = useMemo(
 		() => apiKeysQuery.data?.keys.filter((k) => !k.is_revoked) ?? [],
 		[apiKeysQuery.data?.keys],
@@ -107,18 +105,19 @@ export function PlaygroundClient() {
 
 	// Plaintext for the currently selected server key, if we stashed it
 	// locally at creation time. Null if the user has nothing selected or we
-	// don't have plaintext available.
+	// don't have plaintext available. The public /v1/transcript endpoint
+	// requires Bearer auth — there is no cookie fallback.
 	const selectedPlaintext = useMemo(() => {
 		if (showManual) return manualKey.trim() || null;
 		if (!selectedKeyId) return null;
 		return getStashedKey(selectedKeyId)?.plaintext ?? null;
 	}, [selectedKeyId, manualKey, showManual]);
 
-	// Auth mode for the next request — bearer when we have plaintext, cookie
-	// session otherwise. Shown to the user as a small note.
-	const authMode: 'bearer' | 'session' = selectedPlaintext
+	// Auth mode for the next request — bearer when we have plaintext, or
+	// unavailable (the public endpoint has no session fallback).
+	const authMode: 'bearer' | 'unavailable' = selectedPlaintext
 		? 'bearer'
-		: 'session';
+		: 'unavailable';
 
 	// Submit button gating. Mirrors the early-return guards in onSubmit so
 	// the button visibly reflects what the server would accept, instead of
@@ -131,185 +130,85 @@ export function PlaygroundClient() {
 			: 'Select an API key to enable'
 		: undefined;
 
-	// The cURL we display always shows the public-API form, regardless of
-	// which auth path the in-browser request takes — that's the snippet a
-	// developer would paste into their own code. Switches endpoint based on
-	// the active tab: video → /v1/transcript, playlist → /v1/playlist/transcripts,
-	// channel → /v1/channel/transcripts (mode-aware). The transcript options
-	// (format/language/native_only/translate_to) are shared across all
-	// variants because the bulk endpoints accept the same per-item options.
-	const curlPreview = useMemo(() => {
-		const transcriptOpts = {
+	// The cURL we display always shows the public-API form (POST /v1/transcript).
+	// The transcript options (format/language/native_only/translate_to) are
+	// included in the JSON body.
+	const curlPreview = useMemo(
+		() =>
+			buildCurlPreview({
+				mode: 'video',
+				firstUrl: videoList[0]?.url ?? null,
+				format,
+				language,
+				nativeOnly,
+				translateTo,
+				bearerPlaintext: selectedPlaintext,
+			}),
+		[videoList, format, language, nativeOnly, translateTo, selectedPlaintext],
+	);
+
+	const onSubmit = useCallback(
+		async (e: React.FormEvent) => {
+			e.preventDefault();
+			if (!selectedPlaintext) {
+				toast.error(
+					'A plaintext API key is required. Paste one or pick a key created in this browser.',
+				);
+				return;
+			}
+			if (videoList.length === 0) {
+				toast.error('Add at least one YouTube URL or video ID.');
+				return;
+			}
+			setSubmitting(true);
+			setResults([]);
+			setActiveResultIdx(0);
+
+			const acc: BulkResultEntry[] = [];
+			for (const v of videoList) {
+				const body: Record<string, unknown> = {
+					url: v.url,
+					format,
+					language: language === 'auto' ? undefined : language,
+					native_only: nativeOnly || undefined,
+					translate_to: translateTo === 'none' ? undefined : translateTo,
+				};
+				try {
+					const current = await runOne(selectedPlaintext, body);
+					if (current.status === 'completed' && current.result) {
+						acc.push({ url: v.url, ok: true, data: current.result });
+					} else {
+						acc.push({
+							url: v.url,
+							ok: false,
+							error: current.error_message ?? 'Request failed',
+						});
+					}
+				} catch (err) {
+					acc.push({
+						url: v.url,
+						ok: false,
+						error: getApiErrorMessage(err, 'Request failed'),
+					});
+				}
+				setResults([...acc]);
+			}
+			setSubmitting(false);
+		},
+		[
+			selectedPlaintext,
+			videoList,
 			format,
 			language,
 			nativeOnly,
 			translateTo,
-			bearerPlaintext: selectedPlaintext,
-		};
-		if (tab === 'playlist') {
-			return buildCurlPreview({
-				mode: 'playlist',
-				playlist: playlistInput.trim(),
-				limit: browseLimit,
-				...transcriptOpts,
-			});
-		}
-		if (tab === 'channel') {
-			if (channelMode === 'search') {
-				return buildCurlPreview({
-					mode: 'channel-search',
-					channel: channelInput.trim(),
-					query: channelQuery.trim(),
-					limit: browseLimit,
-					...transcriptOpts,
-				});
-			}
-			return buildCurlPreview({
-				mode: channelMode === 'latest' ? 'channel-latest' : 'channel-videos',
-				channel: channelInput.trim(),
-				limit: browseLimit,
-				...transcriptOpts,
-			});
-		}
-		return buildCurlPreview({
-			mode: 'video',
-			firstUrl: videoList[0]?.url ?? null,
-			...transcriptOpts,
-		});
-	}, [
-		tab,
-		channelMode,
-		playlistInput,
-		channelInput,
-		channelQuery,
-		browseLimit,
-		videoList,
-		format,
-		language,
-		nativeOnly,
-		translateTo,
-		selectedPlaintext,
-	]);
+		],
+	);
 
-	async function onSubmit(e: React.FormEvent) {
-		e.preventDefault();
-		if (showManual && !manualKey.trim()) {
-			toast.error('Paste an API key or pick one from the dropdown.');
-			return;
-		}
-		if (tab !== 'videos' && !selectedPlaintext) {
-			toast.error(
-				'Playlist, channel, and search calls need a plaintext API key. Paste one or pick a key created in this browser.',
-			);
-			return;
-		}
-		setSubmitting(true);
-		setResults([]);
-		setActiveResultIdx(0);
-
-		// Playlist / channel: server-side bulk endpoint does list expansion +
-		// per-video transcripts in one HTTP call. The response items map
-		// directly onto BulkResultEntry — no client-side loop required.
-		if (tab === 'playlist' || tab === 'channel') {
-			try {
-				const items = await fetchBulkTranscripts();
-				setResults(items.map(bulkItemToEntry));
-			} catch (err) {
-				toast.error(getApiErrorMessage(err, 'Bulk transcripts failed'));
-			} finally {
-				setSubmitting(false);
-			}
-			return;
-		}
-
-		// Free-form video list: kept as a client-side loop because there's no
-		// equivalent bulk endpoint for arbitrary URLs (potential follow-up).
-		if (videoList.length === 0) {
-			toast.error('Add at least one YouTube URL or video ID.');
-			setSubmitting(false);
-			return;
-		}
-
-		const acc: BulkResultEntry[] = [];
-		for (const v of videoList) {
-			try {
-				const params = {
-					url: v.url,
-					format,
-					language: language === 'auto' ? undefined : language,
-					native_only: nativeOnly,
-					translate_to:
-						translateTo === 'none' ? undefined : translateTo,
-				};
-				const data = selectedPlaintext
-					? await fetchWithBearerMutation.mutateAsync({
-							bearer: selectedPlaintext,
-							...params,
-						})
-					: await fetchAsUserMutation.mutateAsync(params);
-				acc.push({url: v.url, ok: true, data});
-			} catch (err) {
-				acc.push({
-					url: v.url,
-					ok: false,
-					error: getApiErrorMessage(err, 'Request failed'),
-				});
-			}
-			setResults([...acc]);
-		}
-		setSubmitting(false);
-	}
-
-	async function fetchBulkTranscripts(): Promise<BulkTranscriptItem[]> {
-		const bearer = selectedPlaintext;
-		if (!bearer) throw new Error('A plaintext API key is required.');
-
-		// Shared transcript options between playlist and channel paths.
-		const opts = {
-			bearer,
-			limit: browseLimit,
-			format,
-			language: language === 'auto' ? undefined : language,
-			native_only: nativeOnly,
-			translate_to: translateTo === 'none' ? undefined : translateTo,
-		};
-
-		if (tab === 'playlist') {
-			if (!playlistInput.trim())
-				throw new Error('Paste a playlist URL or ID.');
-			const res = await playlistTranscriptsMutation.mutateAsync({
-				...opts,
-				playlist: playlistInput.trim(),
-			});
-			return res.items;
-		}
-
-		// tab === 'channel'
-		if (!channelInput.trim())
-			throw new Error('Paste a channel URL, ID, or handle.');
-		const mode: ChannelTranscriptsMode = channelMode;
-		if (mode === 'search' && !channelQuery.trim()) {
-			throw new Error('Enter a channel search query.');
-		}
-		const res = await channelTranscriptsMutation.mutateAsync({
-			...opts,
-			channel: channelInput.trim(),
-			mode,
-			...(mode === 'search' ? {q: channelQuery.trim()} : {}),
-		});
-		return res.items;
-	}
-
-	function bulkItemToEntry(item: BulkTranscriptItem): BulkResultEntry {
-		if (item.ok && item.transcript) {
-			return {url: item.url, ok: true, data: item.transcript};
-		}
-		return {
-			url: item.url,
-			ok: false,
-			error: item.error?.message ?? 'Request failed',
-		};
-	}
+	const handleCopyPreview = useCallback(async () => {
+		await navigator.clipboard.writeText(curlPreview);
+		toast.success('Copied');
+	}, [curlPreview]);
 
 	return (
 		<div className="max-w-7xl">
@@ -332,8 +231,8 @@ export function PlaygroundClient() {
 							<form onSubmit={onSubmit} className="space-y-4">
 								{/* API key picker — backed by /me/api-keys. Each item shows
                     name + prefix; we look up plaintext from the local stash
-                    when sending, and gracefully fall back to session auth
-                    when not available. */}
+                    when sending. The public /v1/transcript endpoint requires
+                    Bearer auth; there is no session fallback. */}
 								<div className="space-y-2">
 									<div className="flex items-center justify-between">
 										<Label>API key</Label>
@@ -407,8 +306,8 @@ export function PlaygroundClient() {
 																</span>
 																{!stashed && (
 																	<span className="text-[10px] text-muted-foreground border rounded px-1 py-0.5">
-																		session
-																		auth
+																		no
+																		plaintext
 																	</span>
 																)}
 															</span>
@@ -419,7 +318,7 @@ export function PlaygroundClient() {
 										</Select>
 									)}
 
-									{/* Status note explaining which auth path will be used. */}
+									{/* Status note explaining auth availability. */}
 									{!showManual && serverKeys.length > 0 && (
 										<p className="text-xs text-muted-foreground">
 											{authMode === 'bearer' ? (
@@ -434,10 +333,8 @@ export function PlaygroundClient() {
 												<>
 													Plaintext for this key
 													isn&apos;t stored in this
-													browser, so the request will
-													use your dashboard session
-													instead. Both paths bill the
-													same account.
+													browser. Pick a key created
+													here, or paste one directly.
 												</>
 											)}
 										</p>
@@ -466,10 +363,7 @@ export function PlaygroundClient() {
 									</Select>
 								</div>
 
-								{/* Languages: source + target. Source picks which audio
-                    language to fetch / detect; target asks for an optional
-                    translation (wired in Feature 4 — for now we surface a
-                    toast if the user asks for one). */}
+								{/* Languages: source + target. */}
 								<div className="grid grid-cols-2 gap-4">
 									<div className="space-y-2">
 										<Label className="flex items-center gap-1.5">
@@ -529,171 +423,31 @@ export function PlaygroundClient() {
 									onChange={setShowTimestamps}
 								/>
 
-								{/* Tabs */}
-								<Tabs
-									value={tab}
-									onValueChange={(v) =>
-										setTab(v as typeof tab)
-									}
-								>
-									<TabsList className="w-full grid grid-cols-3">
-										<TabsTrigger value="videos">
-											Videos
-										</TabsTrigger>
-										<TabsTrigger value="playlist">
-											Playlist
-										</TabsTrigger>
-										<TabsTrigger value="channel">
-											Channel
-										</TabsTrigger>
-									</TabsList>
-									<TabsContent
-										value="videos"
-										className="mt-3 space-y-2"
-									>
-										<Label htmlFor="urls">
-											YouTube video URLs or IDs (one per
-											line)
-										</Label>
-										<Textarea
-											id="urls"
-											rows={5}
-											placeholder={
-												'https://youtu.be/dQw4w9WgXcQ\nhttps://www.youtube.com/watch?v=...'
-											}
-											value={videosText}
-											onChange={(e) =>
-												setVideosText(e.target.value)
-											}
-											className="font-mono text-sm"
-										/>
-										<p className="text-xs text-muted-foreground">
-											{videoList.length} video
-											{videoList.length === 1
-												? ''
-												: 's'}{' '}
-											detected
-										</p>
-									</TabsContent>
-									<TabsContent
-										value="playlist"
-										className="mt-3 space-y-2"
-									>
-										<Label htmlFor="playlist">
-											Playlist URL or ID
-										</Label>
-										<Input
-											id="playlist"
-											placeholder="https://www.youtube.com/playlist?list=..."
-											value={playlistInput}
-											onChange={(e) =>
-												setPlaylistInput(e.target.value)
-											}
-										/>
-									</TabsContent>
-									<TabsContent
-										value="channel"
-										className="mt-3 space-y-3"
-									>
-										<div className="space-y-2">
-											<Label htmlFor="channel">
-												Channel URL, ID, or handle
-											</Label>
-											<Input
-												id="channel"
-												placeholder="@mkbhd or https://www.youtube.com/@mkbhd"
-												value={channelInput}
-												onChange={(e) =>
-													setChannelInput(
-														e.target.value,
-													)
-												}
-											/>
-										</div>
-										<div className="space-y-2">
-											<Label>Channel mode</Label>
-											<Select
-												value={channelMode}
-												onValueChange={(v) =>
-													setChannelMode(
-														v as typeof channelMode,
-													)
-												}
-											>
-												<SelectTrigger>
-													<SelectValue />
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="latest">
-														Latest uploads
-													</SelectItem>
-													<SelectItem value="videos">
-														All videos
-													</SelectItem>
-													<SelectItem value="search">
-														Search in channel
-													</SelectItem>
-												</SelectContent>
-											</Select>
-										</div>
-										{channelMode === 'search' && (
-											<div className="space-y-2">
-												<Label htmlFor="channel-query">
-													Search query
-												</Label>
-												<Input
-													id="channel-query"
-													placeholder="interview, tutorial, launch..."
-													value={channelQuery}
-													onChange={(e) =>
-														setChannelQuery(
-															e.target.value,
-														)
-													}
-												/>
-											</div>
-										)}
-									</TabsContent>
-								</Tabs>
-
-								{tab !== 'videos' && (
-									<div className="grid gap-3 sm:grid-cols-[1fr_96px] sm:items-end">
-										<p className="text-xs text-muted-foreground">
-											This first loads video URLs from the
-											new browse endpoint, then fetches
-											transcripts for the returned videos.
-										</p>
-										<div className="space-y-1">
-											<Label
-												htmlFor="browse-limit"
-												className="text-xs"
-											>
-												Limit
-											</Label>
-											<Input
-												id="browse-limit"
-												type="number"
-												min={1}
-												max={20}
-												value={browseLimit}
-												onChange={(e) =>
-													setBrowseLimit(
-														Math.min(
-															20,
-															Math.max(
-																1,
-																Number(
-																	e.target
-																		.value,
-																) || 1,
-															),
-														),
-													)
-												}
-											/>
-										</div>
-									</div>
-								)}
+								{/* Video URLs */}
+								<div className="space-y-2">
+									<Label htmlFor="urls">
+										YouTube video URLs or IDs (one per line)
+									</Label>
+									<Textarea
+										id="urls"
+										rows={5}
+										placeholder={
+											'https://youtu.be/dQw4w9WgXcQ\nhttps://www.youtube.com/watch?v=...'
+										}
+										value={videosText}
+										onChange={(e) =>
+											setVideosText(e.target.value)
+										}
+										className="font-mono text-sm"
+									/>
+									<p className="text-xs text-muted-foreground">
+										{videoList.length} video
+										{videoList.length === 1
+											? ''
+											: 's'}{' '}
+										detected
+									</p>
+								</div>
 
 								<Button
 									type="submit"
@@ -730,12 +484,7 @@ export function PlaygroundClient() {
 								<Button
 									variant="ghost"
 									size="sm"
-									onClick={async () => {
-										await navigator.clipboard.writeText(
-											curlPreview,
-										);
-										toast.success('Copied');
-									}}
+									onClick={handleCopyPreview}
 								>
 									<Copy className="h-3.5 w-3.5 mr-1.5" />
 									Copy
