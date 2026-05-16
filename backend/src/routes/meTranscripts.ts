@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { sessionAuth } from '../middleware/sessionAuth';
 import { VALID_FORMATS, OutputFormat } from '../services/formatters';
-import { ValidationError } from '../utils/errors';
+import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
 
 /**
@@ -18,6 +18,7 @@ import * as svc from '../services/transcriptRequestService';
  * Literal sub-paths are registered before the `/:id` param route.
  */
 export const meTranscriptsRouter = Router();
+
 meTranscriptsRouter.use(sessionAuth);
 
 const CreateSchema = z.object({
@@ -43,7 +44,8 @@ meTranscriptsRouter.post('/', async (req, res, next) => {
       source: 'dashboard',
       config: parsed.data,
     });
-    res.status(row.status === 'queued' ? 202 : 200).json(row);
+    // 202 for queued/processing (still in flight); 200 only for a completed cache hit
+    res.status(row.status === 'queued' || row.status === 'processing' ? 202 : 200).json(row);
   } catch (err) {
     next(err);
   }
@@ -56,7 +58,13 @@ const ListSchema = z.object({
 
 meTranscriptsRouter.get('/', async (req, res, next) => {
   try {
-    const { limit, offset } = ListSchema.parse(req.query);
+    const parsed = ListSchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid query parameters', {
+        issues: parsed.error.flatten().fieldErrors,
+      });
+    }
+    const { limit, offset } = parsed.data;
     const result = await svc.listUserRequests(req.user!.id, limit, offset);
     res.json({ ...result, limit, offset });
   } catch (err) {
@@ -68,8 +76,7 @@ meTranscriptsRouter.get('/:id', async (req, res, next) => {
   try {
     const row = await svc.getUserRequest(req.params.id, req.user!.id);
     if (!row) {
-      res.status(404).json({ error: 'not_found', code: 'NOT_FOUND' });
-      return;
+      throw new NotFoundError('Transcript request not found');
     }
     res.json(row);
   } catch (err) {
@@ -81,8 +88,7 @@ meTranscriptsRouter.delete('/:id', async (req, res, next) => {
   try {
     const row = await svc.cancelRequest(req.params.id, req.user!.id);
     if (!row) {
-      res.status(404).json({ error: 'not_found', code: 'NOT_FOUND' });
-      return;
+      throw new NotFoundError('Transcript request not found');
     }
     res.json(row);
   } catch (err) {
