@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { Plus, RefreshCw } from 'lucide-react';
@@ -71,13 +71,16 @@ export default function TranscriptsPage() {
     return result;
   }, [items]);
 
-  function handleCancel(id: string) {
-    cancelMutation.mutate(id, {
-      onSuccess: () => toast.success('Request canceled'),
-      onError: (err) =>
-        toast.error(getApiErrorMessage(err, 'Could not cancel request')),
-    });
-  }
+  const handleCancel = useCallback(
+    (id: string) => {
+      cancelMutation.mutate(id, {
+        onSuccess: () => toast.success('Request canceled'),
+        onError: (err) =>
+          toast.error(getApiErrorMessage(err, 'Could not cancel request')),
+      });
+    },
+    [cancelMutation],
+  );
 
   const hasResults = entries.length > 0;
 
