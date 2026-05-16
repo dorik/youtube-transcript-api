@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
@@ -34,23 +35,35 @@ export default function TranscriptViewPage() {
     ? getApiErrorMessage(requestQuery.error, 'Could not load this request')
     : null;
 
-  function onTranslateTargetChange(target: string | null) {
+  const handleRetry = useCallback(() => {
     if (!request) return;
-    createMutation.mutate(
-      {
-        url: request.request.url,
-        language: request.request.language,
-        translate_to: target ?? undefined,
-      },
-      {
-        onSuccess: (next) => {
-          router.push(`/dashboard/transcripts/${next.id}`);
+    createMutation.mutate(request.request, {
+      onSuccess: (next) => router.push(`/dashboard/transcripts/${next.id}`),
+      onError: (err) =>
+        toast.error(getApiErrorMessage(err, 'Retry failed')),
+    });
+  }, [createMutation, request, router]);
+
+  const onTranslateTargetChange = useCallback(
+    (target: string | null) => {
+      if (!request) return;
+      createMutation.mutate(
+        {
+          url: request.request.url,
+          language: request.request.language,
+          translate_to: target ?? undefined,
         },
-        onError: (err) =>
-          toast.error(getApiErrorMessage(err, 'Could not queue translation')),
-      },
-    );
-  }
+        {
+          onSuccess: (next) => {
+            router.push(`/dashboard/transcripts/${next.id}`);
+          },
+          onError: (err) =>
+            toast.error(getApiErrorMessage(err, 'Could not queue translation')),
+        },
+      );
+    },
+    [createMutation, request, router],
+  );
 
   return (
     <div className="space-y-6 max-w-7xl">
@@ -121,14 +134,7 @@ export default function TranscriptViewPage() {
             <Button
               variant="outline"
               disabled={createMutation.isPending}
-              onClick={() =>
-                createMutation.mutate(request.request, {
-                  onSuccess: (next) =>
-                    router.push(`/dashboard/transcripts/${next.id}`),
-                  onError: (err) =>
-                    toast.error(getApiErrorMessage(err, 'Retry failed')),
-                })
-              }
+              onClick={handleRetry}
             >
               Retry
             </Button>
