@@ -238,30 +238,19 @@ async function chargeBrowseCredit(
   });
 }
 
-interface LogBrowseRequestOptions {
-  /** When the request started (Date.now()), used to compute response_time_ms. */
-  startedAt?: number;
-  /** Output format — relevant for bulk-transcript endpoints. */
-  format?: string;
-}
-
 async function logBrowseRequest(
   userId: string,
   apiKeyId: string | null,
   endpoint: string,
   creditsUsed: number,
-  options: LogBrowseRequestOptions = {},
 ): Promise<void> {
-  const responseTimeMs = options.startedAt
-    ? Date.now() - options.startedAt
-    : null;
   try {
     await pool.query(
       `INSERT INTO api_requests
         (user_id, api_key_id, method, endpoint, status_code,
          credits_used, response_time_ms, format)
        VALUES ($1, $2, 'GET', $3, 200, $4, $5, $6)`,
-      [userId, apiKeyId, endpoint, creditsUsed, responseTimeMs, options.format ?? null],
+      [userId, apiKeyId, endpoint, creditsUsed, null, null],
     );
   } catch (err) {
     logger.warn({ err, endpoint }, 'Failed to log browse request (non-fatal)');
