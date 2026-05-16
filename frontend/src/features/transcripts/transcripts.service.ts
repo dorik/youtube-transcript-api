@@ -2,73 +2,77 @@ import { apiClient } from '@/lib/http/client';
 import { createApi } from '@/lib/http/createApi';
 import { methodsEnums } from '@/lib/http/constants';
 import type {
-  FetchTranscriptAsUserInput,
-  FetchTranscriptInput,
-  FetchTranscriptWithBearerInput,
-  HistoryResponse,
-  ListTranscriptsInput,
-  TranscriptResponse,
+  BatchCreateResponse,
+  BatchDetailResponse,
+  CreateBatchInput,
+  CreateTranscriptInput,
+  ListRequestsInput,
+  RequestListResponse,
+  TranscriptRequest,
 } from './types';
 
-function transcriptQuery(input: FetchTranscriptInput) {
-  const translate =
-    input.translate_to && input.translate_to !== 'none' ? input.translate_to : undefined;
-
-  return {
-    url: input.url,
-    format: input.format,
-    language: input.language,
-    native_only: input.native_only ? 'true' : undefined,
-    translate_to: translate,
-  };
-}
-
-function listTranscriptsQuery(input: ListTranscriptsInput) {
-  return {
-    url: '/me/transcripts',
-    method: methodsEnums.GET,
-    params: input,
-  };
-}
-
-function fetchTranscriptAsUserQuery(input: FetchTranscriptAsUserInput) {
-  return {
-    url: '/me/transcript',
-    method: methodsEnums.GET,
-    params: transcriptQuery(input),
-  };
-}
-
-function fetchTranscriptWithBearerQuery({
-  bearer,
-  ...input
-}: FetchTranscriptWithBearerInput) {
-  return {
-    url: '/v1/transcript',
-    method: methodsEnums.GET,
-    params: transcriptQuery(input),
-    config: {
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-      },
-    },
-  };
-}
-
-export const listTranscripts = createApi<ListTranscriptsInput, HistoryResponse>({
-  queryFn: apiClient,
-  query: listTranscriptsQuery,
-});
-
-export const fetchTranscriptAsUser = createApi<FetchTranscriptAsUserInput, TranscriptResponse>({
-  queryFn: apiClient,
-  query: fetchTranscriptAsUserQuery,
-});
-
-export const fetchTranscriptWithBearer = createApi<
-  FetchTranscriptWithBearerInput,
-  TranscriptResponse
+/** POST /me/transcripts — enqueue one request. */
+export const createTranscriptRequest = createApi<
+  CreateTranscriptInput,
+  TranscriptRequest
 >({
   queryFn: apiClient,
-  query: fetchTranscriptWithBearerQuery,
+  request: (input) => ({
+    url: '/me/transcripts',
+    method: methodsEnums.POST,
+    data: input,
+  }),
+});
+
+/** POST /me/transcripts/bulk — enqueue a playlist/channel/url-list batch. */
+export const createTranscriptBatch = createApi<
+  CreateBatchInput,
+  BatchCreateResponse
+>({
+  queryFn: apiClient,
+  request: (input) => ({
+    url: '/me/transcripts/bulk',
+    method: methodsEnums.POST,
+    data: input,
+  }),
+});
+
+/** GET /me/transcripts — paginated list of the user's requests. */
+export const listTranscriptRequests = createApi<
+  ListRequestsInput,
+  RequestListResponse
+>({
+  queryFn: apiClient,
+  query: (input) => ({
+    url: '/me/transcripts',
+    method: methodsEnums.GET,
+    params: { limit: input.limit, offset: input.offset },
+  }),
+});
+
+/** GET /me/transcripts/:id — one request. */
+export const getTranscriptRequest = createApi<string, TranscriptRequest>({
+  queryFn: apiClient,
+  query: (id) => ({
+    url: `/me/transcripts/${id}`,
+    method: methodsEnums.GET,
+  }),
+});
+
+/** DELETE /me/transcripts/:id — cancel a queued request. */
+export const cancelTranscriptRequest = createApi<string, TranscriptRequest>({
+  queryFn: apiClient,
+  request: (id) => ({
+    url: `/me/transcripts/${id}`,
+    method: methodsEnums.DELETE,
+  }),
+});
+
+/** GET /me/transcripts/batches/:id — batch summary + entries. */
+export const getTranscriptBatch = createApi<string, BatchDetailResponse>({
+  queryFn: apiClient,
+  query: (id) => ({
+    url: `/me/transcripts/batches/${id}`,
+    method: methodsEnums.GET,
+  }),
 });
