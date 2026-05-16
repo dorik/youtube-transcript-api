@@ -1,5 +1,4 @@
 import { Queue } from 'bullmq';
-import { EventEmitter } from 'node:events';
 import { logger } from '../config/logger';
 import { queueConnection } from './connection';
 
@@ -23,27 +22,6 @@ export const transcriptQueue = new Queue(TRANSCRIPT_QUEUE_NAME, {
     removeOnFail: { count: 5000 },
   },
 });
-
-/**
- * In-process status bus. The worker emits an `update` event after every DB
- * status write; the SSE route subscribes. In-process is sufficient because the
- * worker runs inside the web service. If the worker is ever split into its own
- * process, replace this with BullMQ QueueEvents / Redis pub-sub.
- */
-export interface TranscriptUpdateEvent {
-  userId: string;
-  requestId: string;
-  batchId: string | null;
-  status: string;
-}
-
-export const transcriptEvents = new EventEmitter();
-// One listener per open SSE connection; lift the default 10-listener cap.
-transcriptEvents.setMaxListeners(0);
-
-export function emitTranscriptUpdate(e: TranscriptUpdateEvent): void {
-  transcriptEvents.emit('update', e);
-}
 
 /** Enqueue one transcript request; returns the BullMQ job id. */
 export async function enqueueTranscriptJob(requestId: string): Promise<string> {
