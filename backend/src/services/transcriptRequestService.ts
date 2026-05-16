@@ -1,4 +1,4 @@
-import { pool } from '../db/pool';
+import { pool, withTransaction } from '../db/pool';
 import { OutputFormat } from './formatters';
 import { TranscriptResponse } from './transcriptService';
 import { extractVideoId } from '../utils/youtubeUrl';
@@ -8,6 +8,8 @@ import {
   enqueueTranscriptJob,
   removeTranscriptJob,
 } from '../queue/transcriptQueue';
+import { logger } from '../config/logger';
+import { getCached } from './cacheService';
 
 export type RequestStatus =
   | 'queued'
@@ -266,4 +268,353 @@ export async function cancelRequest(
     );
   }
   return rows[0];
+}
+
+// ---------------------------------------------------------------------------
+// Worker-facing status mutations
+// ---------------------------------------------------------------------------
+
+export async function markProcessing(
+  id: string,
+  attempt: number,
+): Promise<void> {
+  await pool.query(
+    `UPDATE transcript_requests
+     SET status = 'processing', attempts = $2,
+         started_at = COALESCE(started_at, NOW())
+     WHERE id = $1`,
+    [id, attempt],
+  );
+}
+
+export async function setMetadata(
+  id: string,
+  meta: {
+    title: string | null;
+    channel: string | null;
+    durationSeconds: number | null;
+    thumbnailUrl: string | null;
+  },
+): Promise<void> {
+  await pool.query(
+    `UPDATE transcript_requests
+     SET title = $2, channel = $3, duration_seconds = $4, thumbnail_url = $5
+     WHERE id = $1`,
+    [id, meta.title, meta.channel, meta.durationSeconds, meta.thumbnailUrl],
+  );
+}
+
+export async function markCompleted(
+  id: string,
+  result: TranscriptResponse,
+): Promise<void> {
+  await pool.query(
+    `UPDATE transcript_requests
+     SET status = 'completed', result = $2, credits_used = $3,
+         video_id = COALESCE(video_id, $4),
+         title = COALESCE(title, $5), channel = COALESCE(channel, $6),
+         duration_seconds = COALESCE(duration_seconds, $7),
+         completed_at = NOW()
+     WHERE id = $1`,
+    [
+      id,
+      JSON.stringify(result),
+      result.credits_used,
+      result.video_id,
+      result.title,
+      result.channel,
+      result.duration,
+    ],
+  );
+}
+
+export async function markFailed(
+  id: string,
+  errorCode: string,
+  errorMessage: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE transcript_requests
+     SET status = 'failed', error_code = $2, error_message = $3,
+         completed_at = NOW()
+     WHERE id = $1`,
+    [id, errorCode, errorMessage.slice(0, 1000)],
+  );
+}
+
+/**
+ * Best-effort api_requests log row, written by the worker so dashboard usage
+ * charts keep capturing every request. Never throws.
+ */
+export async function logApiRequest(input: {
+  userId: string;
+  endpoint: string;
+  statusCode: number;
+  videoId: string | null;
+  format: string | null;
+  language: string | null;
+  transcriptSource: string | null;
+  cacheHit: boolean | null;
+  creditsUsed: number | null;
+  errorCode: string | null;
+}): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO api_requests
+        (user_id, method, endpoint, status_code, video_id, format, language,
+         transcript_source, cache_hit, credits_used, error_code)
+       VALUES ($1,'POST',$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        input.userId,
+        input.endpoint,
+        input.statusCode,
+        input.videoId,
+        input.format,
+        input.language,
+        input.transcriptSource,
+        input.cacheHit,
+        input.creditsUsed,
+        input.errorCode,
+      ],
+    );
+  } catch (err) {
+    logger.warn({ err }, 'Failed to log api_requests row from worker');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Batch progress + retention queries
+// ---------------------------------------------------------------------------
+
+export interface BatchRow {
+  id: string;
+  user_id: string;
+  kind: 'playlist' | 'channel' | 'videos';
+  source_url: string | null;
+  label: string | null;
+  total: number;
+  created_at: Date;
+}
+
+export interface BatchProgress {
+  queued: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+}
+
+export async function getBatch(
+  id: string,
+  userId: string,
+): Promise<BatchRow | null> {
+  const { rows } = await pool.query<BatchRow>(
+    `SELECT id, user_id, kind, source_url, label, total, created_at
+     FROM transcript_batches WHERE id = $1 AND user_id = $2`,
+    [id, userId],
+  );
+  return rows[0] ?? null;
+}
+
+/** Derive per-status counts for a batch — no counter columns to drift. */
+export async function getBatchProgress(
+  batchId: string,
+): Promise<BatchProgress> {
+  const { rows } = await pool.query<{ status: RequestStatus; n: string }>(
+    `SELECT status, COUNT(*)::int AS n
+     FROM transcript_requests WHERE batch_id = $1 GROUP BY status`,
+    [batchId],
+  );
+  const progress: BatchProgress = {
+    queued: 0,
+    processing: 0,
+    completed: 0,
+    failed: 0,
+    canceled: 0,
+  };
+  for (const r of rows) progress[r.status] = Number(r.n);
+  return progress;
+}
+
+export async function listBatchRequests(
+  batchId: string,
+): Promise<TranscriptRequestRow[]> {
+  const { rows } = await pool.query<TranscriptRequestRow>(
+    `SELECT ${ROW_COLUMNS} FROM transcript_requests
+     WHERE batch_id = $1 ORDER BY batch_position ASC`,
+    [batchId],
+  );
+  return rows;
+}
+
+/** Delete batches + standalone requests older than `days`. Returns row count. */
+export async function purgeOldRequests(days = 30): Promise<number> {
+  const batch = await pool.query(
+    `DELETE FROM transcript_batches WHERE created_at < NOW() - ($1 || ' days')::interval`,
+    [String(days)],
+  );
+  const single = await pool.query(
+    `DELETE FROM transcript_requests
+     WHERE batch_id IS NULL AND created_at < NOW() - ($1 || ' days')::interval`,
+    [String(days)],
+  );
+  return (batch.rowCount ?? 0) + (single.rowCount ?? 0);
+}
+
+// ---------------------------------------------------------------------------
+// Batch enqueue
+// ---------------------------------------------------------------------------
+
+/** Max videos a single bulk submission may contain. */
+export const BATCH_VIDEO_CAP = 100;
+
+export class BatchTooLargeError extends ApiError {
+  constructor(count: number, cap: number) {
+    super(
+      400,
+      'BATCH_TOO_LARGE',
+      'invalid_request',
+      `This batch has ${count} videos; the maximum is ${cap}. Split it into smaller batches.`,
+      { count, cap },
+    );
+  }
+}
+
+export interface BatchVideoInput {
+  url: string;
+  video_id: string;
+  title?: string | null;
+  channel?: string | null;
+  thumbnail_url?: string | null;
+  duration_seconds?: number | null;
+}
+
+export interface EnqueueBatchInput {
+  userId: string;
+  kind: 'playlist' | 'channel' | 'videos';
+  sourceUrl: string | null;
+  label: string | null;
+  videos: BatchVideoInput[];
+  config: Omit<TranscriptRequestConfig, 'url'>;
+}
+
+export interface EnqueueBatchResult {
+  batch: BatchRow;
+  requests: TranscriptRequestRow[];
+}
+
+/**
+ * Expand a bulk submission into one batch + one row per video. Videos already
+ * cached for the requested params are inserted directly as `completed` (0
+ * credits, no queue job); the rest are queued. The whole batch is rejected if
+ * the user cannot afford every uncached video.
+ */
+export async function enqueueBatch(
+  input: EnqueueBatchInput,
+): Promise<EnqueueBatchResult> {
+  if (input.videos.length === 0) {
+    throw new ApiError(
+      400,
+      'EMPTY_BATCH',
+      'invalid_request',
+      'The playlist/channel expanded to zero videos.',
+    );
+  }
+  if (input.videos.length > BATCH_VIDEO_CAP) {
+    throw new BatchTooLargeError(input.videos.length, BATCH_VIDEO_CAP);
+  }
+
+  const language = input.config.language ?? 'auto';
+  const cachedFlags = await Promise.all(
+    input.videos.map(async (v) => {
+      try {
+        return Boolean(await getCached(v.video_id, language));
+      } catch {
+        return false;
+      }
+    }),
+  );
+  const uncachedCount = cachedFlags.filter((c) => !c).length;
+
+  const [{ balance }, pending] = await Promise.all([
+    getCreditState(input.userId),
+    countPendingRequests(input.userId),
+  ]);
+  if (pending + uncachedCount > PENDING_REQUEST_CAP) {
+    throw new TooManyPendingError(PENDING_REQUEST_CAP);
+  }
+  if (balance - pending < uncachedCount) {
+    throw new PaymentRequiredError(uncachedCount, balance - pending);
+  }
+
+  const created = await withTransaction(async (client) => {
+    const { rows: batchRows } = await client.query<BatchRow>(
+      `INSERT INTO transcript_batches (user_id, kind, source_url, label, total)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, user_id, kind, source_url, label, total, created_at`,
+      [
+        input.userId,
+        input.kind,
+        input.sourceUrl,
+        input.label,
+        input.videos.length,
+      ],
+    );
+    const batch = batchRows[0];
+
+    const requests: TranscriptRequestRow[] = [];
+    for (let i = 0; i < input.videos.length; i++) {
+      const v = input.videos[i];
+      const cfg: TranscriptRequestConfig = { ...input.config, url: v.url };
+      const status: RequestStatus = cachedFlags[i] ? 'completed' : 'queued';
+      const { rows } = await client.query<TranscriptRequestRow>(
+        `INSERT INTO transcript_requests
+           (user_id, source, status, request, video_id, title, channel,
+            duration_seconds, thumbnail_url, batch_id, batch_position,
+            completed_at)
+         VALUES ($1,'dashboard',$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                 CASE WHEN $2 = 'completed' THEN NOW() ELSE NULL END)
+         RETURNING ${ROW_COLUMNS}`,
+        [
+          input.userId,
+          status,
+          JSON.stringify(cfg),
+          v.video_id,
+          v.title ?? null,
+          v.channel ?? null,
+          v.duration_seconds ?? null,
+          v.thumbnail_url ?? null,
+          batch.id,
+          i,
+        ],
+      );
+      requests.push(rows[0]);
+    }
+    return { batch, requests };
+  });
+
+  for (const row of created.requests) {
+    if (row.status === 'queued') {
+      const jobId = await enqueueTranscriptJob(row.id);
+      await pool.query(
+        `UPDATE transcript_requests SET bullmq_job_id = $1 WHERE id = $2`,
+        [jobId, row.id],
+      );
+      row.bullmq_job_id = jobId;
+    } else {
+      await logApiRequest({
+        userId: input.userId,
+        endpoint: '/me/transcripts/bulk',
+        statusCode: 200,
+        videoId: row.video_id,
+        format: row.request.format,
+        language: row.request.language ?? null,
+        transcriptSource: null,
+        cacheHit: true,
+        creditsUsed: 0,
+        errorCode: null,
+      });
+    }
+  }
+  return created;
 }
