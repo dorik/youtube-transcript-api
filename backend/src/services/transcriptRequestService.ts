@@ -10,6 +10,7 @@ import {
 } from '../queue/transcriptQueue';
 import { logger } from '../config/logger';
 import { getCached } from './cacheService';
+import { normalizeLanguageCode } from '../utils/languageCodes';
 
 export type RequestStatus =
   | 'queued'
@@ -524,7 +525,17 @@ export async function enqueueBatch(
     throw new BatchTooLargeError(input.videos.length, BATCH_VIDEO_CAP);
   }
 
-  const language = input.config.language ?? 'auto';
+  // Normalize the language exactly as getTranscript does before any cache
+  // lookup, so that a non-canonical caller value (e.g. 'english') resolves to
+  // the same cache key ('en') that the worker will use when it runs
+  // getTranscript. Without this, cache hits on non-canonical language strings
+  // are invisible to the pre-check and the user is incorrectly charged a
+  // credit that getTranscript would never have billed.
+  const rawLang = input.config.language;
+  const language =
+    rawLang && rawLang.trim() && rawLang !== 'auto'
+      ? normalizeLanguageCode(rawLang) || rawLang.trim()
+      : 'auto';
   const cachedFlags = await Promise.all(
     input.videos.map(async (v) => {
       try {
