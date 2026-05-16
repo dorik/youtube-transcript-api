@@ -1,56 +1,91 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  fetchTranscriptAsUser,
-  fetchTranscriptWithBearer,
-  listTranscripts,
+  cancelTranscriptRequest,
+  createTranscriptBatch,
+  createTranscriptRequest,
+  getTranscriptBatch,
+  getTranscriptRequest,
+  listTranscriptRequests,
 } from './transcripts.service';
-import type {
-  FetchTranscriptAsUserInput,
-  FetchTranscriptWithBearerInput,
-  HistoryResponse,
-  ListTranscriptsInput,
-  TranscriptResponse,
-} from './types';
 import { transcriptsQueryKeys } from './queryKeys';
+import type {
+  BatchCreateResponse,
+  BatchDetailResponse,
+  CreateBatchInput,
+  CreateTranscriptInput,
+  ListRequestsInput,
+  RequestListResponse,
+  TranscriptRequest,
+} from './types';
 
-export function useTranscriptsQuery(input: ListTranscriptsInput) {
-  return useQuery<HistoryResponse, Error>({
+/** A request is still moving while queued or processing. */
+function isActive(status: TranscriptRequest['status']): boolean {
+  return status === 'queued' || status === 'processing';
+}
+
+export function useTranscriptRequestsQuery(input: ListRequestsInput) {
+  return useQuery<RequestListResponse, Error>({
     queryKey: transcriptsQueryKeys.list(input),
-    queryFn: () => listTranscripts(input),
+    queryFn: () => listTranscriptRequests(input),
+    // Poll while any row is still queued/processing so the list advances
+    // through queued → processing → done without a manual refresh.
+    refetchInterval: (query) =>
+      query.state.data?.items.some((r) => isActive(r.status)) ? 4000 : false,
   });
 }
 
-export function useTranscriptQuery(input: FetchTranscriptAsUserInput, enabled: boolean) {
-  return useQuery<TranscriptResponse, Error>({
-    queryKey: transcriptsQueryKeys.detail(input),
-    queryFn: () => fetchTranscriptAsUser(input),
+export function useTranscriptRequestQuery(id: string, enabled: boolean) {
+  return useQuery<TranscriptRequest, Error>({
+    queryKey: transcriptsQueryKeys.detail(id),
+    queryFn: () => getTranscriptRequest(id),
     enabled,
-    placeholderData: (previousData) => previousData,
-    // A transcript for a given (videoId, language, translate_to) is
-    // effectively immutable — once we have it, refetching just hits the
-    // server cache and logs another `api_requests` row for no new info.
-    // Two settings keep one user action = one HTTP request:
-    //   - staleTime: Infinity  → never marked stale, so window-focus /
-    //                            remount don't auto-refetch.
-    //   - refetchOnWindowFocus: false → defense-in-depth for the same.
-    // The query still refetches when the key changes (language /
-    // translate_to switch), which is what the viewer's dropdowns rely on.
-    staleTime: Infinity,
-    refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      query.state.data && isActive(query.state.data.status) ? 5000 : false,
     meta: { suppressGlobalError: true },
   });
 }
 
-export function useFetchTranscriptAsUserMutation() {
-  return useMutation<TranscriptResponse, Error, FetchTranscriptAsUserInput>({
-    mutationFn: fetchTranscriptAsUser,
+export function useTranscriptBatchQuery(id: string, enabled: boolean) {
+  return useQuery<BatchDetailResponse, Error>({
+    queryKey: transcriptsQueryKeys.batch(id),
+    queryFn: () => getTranscriptBatch(id),
+    enabled,
+    refetchInterval: (query) => {
+      const p = query.state.data?.progress;
+      return p && p.queued + p.processing > 0 ? 6000 : false;
+    },
+  });
+}
+
+export function useCreateTranscriptMutation() {
+  const qc = useQueryClient();
+  return useMutation<TranscriptRequest, Error, CreateTranscriptInput>({
+    mutationFn: createTranscriptRequest,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: transcriptsQueryKeys.all });
+    },
     meta: { suppressGlobalError: true },
   });
 }
 
-export function useFetchTranscriptWithBearerMutation() {
-  return useMutation<TranscriptResponse, Error, FetchTranscriptWithBearerInput>({
-    mutationFn: fetchTranscriptWithBearer,
+export function useCreateBatchMutation() {
+  const qc = useQueryClient();
+  return useMutation<BatchCreateResponse, Error, CreateBatchInput>({
+    mutationFn: createTranscriptBatch,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: transcriptsQueryKeys.all });
+    },
+    meta: { suppressGlobalError: true },
+  });
+}
+
+export function useCancelTranscriptMutation() {
+  const qc = useQueryClient();
+  return useMutation<TranscriptRequest, Error, string>({
+    mutationFn: cancelTranscriptRequest,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: transcriptsQueryKeys.all });
+    },
     meta: { suppressGlobalError: true },
   });
 }
