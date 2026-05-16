@@ -653,6 +653,8 @@ export function PlaygroundClient() {
 											<Label htmlFor="browse-limit" className="text-xs">
 												Limit
 											</Label>
+											{/* Capped at 25 for the playground only, to keep the demo's
+											    poll loop snappy. The backend allows up to 100 (BATCH_VIDEO_CAP). */}
 											<Input
 												id="browse-limit"
 												type="number"
