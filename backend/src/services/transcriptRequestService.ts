@@ -310,9 +310,12 @@ export async function cancelBatch(
     [batch.id],
   );
 
-  // Best-effort job removal, exactly as cancelRequest does — a job the worker
-  // has already picked up cannot be removed, but the worker re-checks the
-  // row's `canceled` status before doing work.
+  // Best-effort job removal. Note the ordering differs deliberately from
+  // cancelRequest: here the conditional UPDATE runs *first*, so `rows` holds
+  // only children confirmed still `queued` at commit time — removing their
+  // jobs cannot race a worker that already owns one. A job the worker has
+  // already picked up cannot be removed, but it re-checks the row's
+  // `canceled` status before doing work.
   for (const row of rows) {
     if (row.bullmq_job_id) await removeTranscriptJob(row.bullmq_job_id);
   }
