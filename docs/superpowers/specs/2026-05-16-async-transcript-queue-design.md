@@ -29,7 +29,7 @@ requests. Results appear in the transcript list as each request completes.
 - A single unified transcript list shows queued, processing, completed, and
   failed entries — there is no separate "jobs" list or route. Bulk entries are
   grouped under a batch header in the same list.
-- Live status updates via Server-Sent Events.
+- Request status is visible in the dashboard list and refreshed by reloading the page.
 - Transient upstream failures retry automatically; permanent failures do not.
 - Worker crashes mid-request do not strand an entry in `processing` forever.
 
@@ -49,13 +49,12 @@ requests. Results appear in the transcript list as each request completes.
 | 2 | **BullMQ** is the queue library, backed by the existing Render Redis. |
 | 3 | **In-process worker.** The BullMQ `Worker` runs inside the existing Express service (no paid Render worker service). Concurrency is low to fit the 512 MB box. |
 | 4 | **Gate at enqueue, charge on success.** Enqueue is rejected if the user cannot afford it; 1 credit is deducted only when a request completes with fresh work (cache hits remain free). Failed requests cost nothing — no refund flow. |
-| 5 | **SSE** for live status updates to the dashboard. |
-| 6 | **One unified list.** Queued/processing/completed/failed entries all live in the transcript list. No "jobs" concept in routes or UI. |
-| 7 | Per-user pending cap: **200** queued/processing requests (raised from a single-request scale to accommodate a full playlist). |
-| 8 | Worker concurrency: **2** (env-configurable via `QUEUE_CONCURRENCY`). |
-| 9 | Cancellation is allowed only while an entry is `queued`. Cancelling a batch cancels all its still-`queued` children. |
-| 10 | **Bulk = fan-out.** A playlist/channel/list submission expands into N individual `transcript_requests` rows, each queued like a single request. There is no separate bulk processing path. |
-| 11 | Playlist/channel **expansion is synchronous** at submit time, capped at **100 videos per batch**. |
+| 5 | **One unified list.** Queued/processing/completed/failed entries all live in the transcript list. No "jobs" concept in routes or UI. |
+| 6 | Per-user pending cap: **200** queued/processing requests (raised from a single-request scale to accommodate a full playlist). |
+| 7 | Worker concurrency: **2** (env-configurable via `QUEUE_CONCURRENCY`). |
+| 8 | Cancellation is allowed only while an entry is `queued`. Cancelling a batch cancels all its still-`queued` children. |
+| 9 | **Bulk = fan-out.** A playlist/channel/list submission expands into N individual `transcript_requests` rows, each queued like a single request. There is no separate bulk processing path. |
+| 10 | Playlist/channel **expansion is synchronous** at submit time, capped at **100 videos per batch**. |
 
 ## Architecture
 
@@ -132,25 +131,25 @@ Migration `013` also **drops** the dead `jobs` / `job_videos` tables (migration
   `maxRetriesPerRequest: null` (required by BullMQ). The existing
   `src/cache/redis.ts` connection is unchanged and keeps `maxRetriesPerRequest: 3`.
 - `src/queue/transcriptQueue.ts` — the BullMQ `Queue` named `transcript-requests`,
-  plus an in-process `EventEmitter` that the SSE layer subscribes to.
+  plus enqueue/remove helpers.
 - `src/queue/worker.ts` — the BullMQ `Worker`, started from `index.ts` on boot,
   `concurrency = QUEUE_CONCURRENCY` (default 2).
 
 **Worker processor steps:**
 
 1. Load the `transcript_requests` row; mark `status = processing`, set
-   `started_at`; emit a `processing` event.
+   `started_at`.
 2. If metadata columns are empty, call `fetchYouTubeMetadata(videoId)` (fast —
    no audio download), write `title` / `channel` / `duration_seconds` /
-   `thumbnail_url`, emit an event so the row fills in.
+   `thumbnail_url`.
 3. Call the existing `getTranscript()` service. All transcript logic — cache,
    captions, Whisper, translation, **and credit deduction** — is unchanged;
    only the call site moves into the worker.
 4. On success: write `result`, `credits_used`, `status = completed`,
    `completed_at`; write the usual `api_requests` log row (moved here from the
-   route so usage charts still capture every request); emit `completed`.
+   route so usage charts still capture every request).
 5. On failure: write `error_code` / `error_message`, `status = failed`,
-   `completed_at`; write the `api_requests` log row; emit `failed`.
+   `completed_at`; write the `api_requests` log row.
 
 **Retry policy:**
 
@@ -226,40 +225,28 @@ All transcript routes live under `/me/transcripts` (dashboard) and `/v1`
 | `GET /me/transcripts/batches/:id` | Batch summary (derived progress counts) + its entries. |
 | `DELETE /me/transcripts/:id` | Cancel a `queued` entry (removes the BullMQ job, sets `status = canceled`). Rejected if already `processing`. |
 | `DELETE /me/transcripts/batches/:id` | Cancel a batch — cancels every still-`queued` child. |
-| `GET /me/transcripts/stream` | SSE stream of status changes for the user. |
 | `POST /v1/transcript` | API mirror of single enqueue; returns `202` + entry id. |
 | `GET /v1/transcript/:id` | API mirror to poll one entry. |
 
 There is no API bulk endpoint — bulk fan-out is a dashboard-only feature. API
 consumers transcribe a playlist by looping `POST /v1/transcript` per video.
 
-Literal sub-paths (`/bulk`, `/stream`, `/batches/...`) are registered before
-the `/:id` param route so Express matches them correctly.
+Literal sub-paths (`/bulk`, `/batches/...`) are registered before the `/:id`
+param route so Express matches them correctly.
 
 The old `GET /me/transcript` (singular) and `GET /v1/transcript` synchronous
 handlers are removed, as is the synchronous `runBulkTranscripts` function in
 `transcriptService.ts` (superseded by bulk fan-out). The list endpoint reads
 from `transcript_requests` instead of aggregating `api_requests`.
 
-### SSE
-
-`GET /me/transcripts/stream` (cookie auth) holds an SSE connection. The worker
-emits `processing` / `completed` / `failed` / metadata-updated events to the
-in-process `EventEmitter`; the SSE handler subscribes and forwards only events
-whose entry belongs to the authenticated user. Each event carries the entry id
-and new status so the frontend can update the row in place.
-
-Because the worker is in-process, no Redis pub/sub is needed. If the worker is
-ever moved to a separate service, the SSE layer must switch to BullMQ
-`QueueEvents` / Redis pub/sub — noted as a constraint, not built now.
-
 ### Frontend
 
 - Submitting a URL is non-blocking: `POST /me/transcripts` → receive the
   `queued` entry → clear the input so the user can immediately submit another.
 - A single **transcript list** renders every entry with a status badge —
-  Queued, Processing, Done, Failed. One SSE connection is opened while the list
-  is mounted; if it drops, the list falls back to polling `GET /me/transcripts`.
+  Queued, Processing, Done, Failed. The list reflects status as of the last
+  page load and is updated by clicking the manual Refresh button or reloading
+  the page.
 - Queued/processing rows show metadata (title, channel, thumbnail, duration)
   when known, and a placeholder in place of the transcript.
 - A `completed` row is clickable → opens the transcript viewer using the
@@ -315,4 +302,4 @@ ever moved to a separate service, the SSE layer must switch to BullMQ
 - A separate Render worker service.
 - Queued (async) playlist/channel expansion — expansion stays synchronous.
 - Migrating historical `api_requests` history into the new list.
-- Email/push notifications on completion (SSE only).
+- Email/push notifications on completion.

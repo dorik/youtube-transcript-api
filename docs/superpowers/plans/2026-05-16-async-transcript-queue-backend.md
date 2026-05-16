@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make transcript requests asynchronous — `POST` enqueues a BullMQ job and returns immediately; an in-process worker runs the existing transcript pipeline; clients poll or stream status.
+**Goal:** Make transcript requests asynchronous — `POST` enqueues a BullMQ job and returns immediately; an in-process worker runs the existing transcript pipeline; clients poll status by id.
 
-**Architecture:** A new `transcript_requests` table (one row per request) plus `transcript_batches` (bulk grouping) backs a BullMQ queue on the existing Redis. A BullMQ `Worker` runs inside the Express process and calls the unchanged `getTranscript()` service. Routes change from do-work-and-return to validate-gate-enqueue. Live updates flow over SSE driven by an in-process `EventEmitter`.
+**Architecture:** A new `transcript_requests` table (one row per request) plus `transcript_batches` (bulk grouping) backs a BullMQ queue on the existing Redis. A BullMQ `Worker` runs inside the Express process and calls the unchanged `getTranscript()` service. Routes change from do-work-and-return to validate-gate-enqueue.
 
 **Tech Stack:** Node.js, Express, TypeScript, PostgreSQL (`pg`), Redis (`ioredis`), BullMQ, Zod, Vitest.
 
 **Spec:** `docs/superpowers/specs/2026-05-16-async-transcript-queue-design.md`
 
-**Scope note:** This plan covers the backend only. The dashboard UI (queue panel, SSE hook, batch grouping) is a separate follow-up plan that depends on this one being merged.
+**Scope note:** This plan covers the backend only. The dashboard UI (queue panel, batch grouping) is a separate follow-up plan that depends on this one being merged.
 
 ---
 
@@ -19,13 +19,13 @@
 **Create:**
 - `backend/src/db/migrations/013_transcript_queue.sql` — schema for `transcript_requests` + `transcript_batches`; drops dead `jobs`/`job_videos`.
 - `backend/src/queue/connection.ts` — dedicated ioredis connection for BullMQ.
-- `backend/src/queue/transcriptQueue.ts` — the `Queue`, the status `EventEmitter`, enqueue/remove helpers.
+- `backend/src/queue/transcriptQueue.ts` — the `Queue`, enqueue/remove helpers.
 - `backend/src/queue/worker.ts` — the `Worker`, job processor, retention job, `startWorker()`.
 - `backend/src/services/errorClassification.ts` — `classifyError()` (transient vs permanent).
 - `backend/src/services/errorClassification.test.ts` — unit tests.
 - `backend/src/services/transcriptRequestService.ts` — DB layer + enqueue-gate orchestration for requests and batches.
 - `backend/src/services/transcriptRequestService.test.ts` — unit tests for gate logic.
-- `backend/src/routes/meTranscripts.ts` — **rewritten**: list + create + get + cancel + bulk + SSE under `/me/transcripts`.
+- `backend/src/routes/meTranscripts.ts` — **rewritten**: list + create + get + cancel + bulk under `/me/transcripts`.
 
 **Modify:**
 - `backend/package.json` — add `bullmq`.
@@ -213,7 +213,6 @@ Create `backend/src/queue/transcriptQueue.ts`:
 
 ```ts
 import { Queue } from 'bullmq';
-import { EventEmitter } from 'node:events';
 import { queueConnection } from './connection';
 
 export const TRANSCRIPT_QUEUE_NAME = 'transcript-requests';
@@ -237,27 +236,6 @@ export const transcriptQueue = new Queue(TRANSCRIPT_QUEUE_NAME, {
   },
 });
 
-/**
- * In-process status bus. The worker emits an `update` event after every DB
- * status write; the SSE route subscribes. In-process is sufficient because the
- * worker runs inside the web service. If the worker is ever split into its own
- * process, replace this with BullMQ QueueEvents / Redis pub-sub.
- */
-export interface TranscriptUpdateEvent {
-  userId: string;
-  requestId: string;
-  batchId: string | null;
-  status: string;
-}
-
-export const transcriptEvents = new EventEmitter();
-// One listener per open SSE connection; lift the default 10-listener cap.
-transcriptEvents.setMaxListeners(0);
-
-export function emitTranscriptUpdate(e: TranscriptUpdateEvent): void {
-  transcriptEvents.emit('update', e);
-}
-
 /** Enqueue one transcript request; returns the BullMQ job id. */
 export async function enqueueTranscriptJob(requestId: string): Promise<string> {
   const job = await transcriptQueue.add(JOB_TRANSCRIBE, { requestId });
@@ -280,7 +258,7 @@ Expected: no errors.
 
 ```bash
 git add backend/src/queue/connection.ts backend/src/queue/transcriptQueue.ts
-git commit -m "feat(queue): add BullMQ connection, queue, and status event bus"
+git commit -m "feat(queue): add BullMQ connection and queue module"
 ```
 
 ---
@@ -1174,7 +1152,6 @@ import {
   JOB_CLEANUP,
   TranscriptJobData,
   transcriptQueue,
-  emitTranscriptUpdate,
 } from './transcriptQueue';
 import { config } from '../config/env';
 import { logger } from '../config/logger';
@@ -1199,12 +1176,6 @@ async function processTranscribe(job: Job<TranscriptJobData>): Promise<void> {
 
   const attempt = job.attemptsMade + 1;
   await svc.markProcessing(requestId, attempt);
-  emitTranscriptUpdate({
-    userId: req.user_id,
-    requestId,
-    batchId: req.batch_id,
-    status: 'processing',
-  });
 
   // Step 1: cheap metadata so the row renders before transcription finishes.
   if (req.video_id && !req.title) {
@@ -1215,12 +1186,6 @@ async function processTranscribe(job: Job<TranscriptJobData>): Promise<void> {
         channel: meta.channel,
         durationSeconds: meta.durationSeconds ?? null,
         thumbnailUrl: `https://img.youtube.com/vi/${req.video_id}/mqdefault.jpg`,
-      });
-      emitTranscriptUpdate({
-        userId: req.user_id,
-        requestId,
-        batchId: req.batch_id,
-        status: 'processing',
       });
     } catch (err) {
       logger.info({ err, requestId }, 'Metadata prefetch failed; continuing');
@@ -1249,12 +1214,6 @@ async function processTranscribe(job: Job<TranscriptJobData>): Promise<void> {
       cacheHit: result.cached,
       creditsUsed: result.credits_used,
       errorCode: null,
-    });
-    emitTranscriptUpdate({
-      userId: req.user_id,
-      requestId,
-      batchId: req.batch_id,
-      status: 'completed',
     });
   } catch (err) {
     // Permanent failures must not be retried; transient ones are re-thrown
@@ -1328,12 +1287,6 @@ export async function startWorker(): Promise<void> {
         cacheHit: null,
         creditsUsed: 0,
         errorCode: code,
-      });
-      emitTranscriptUpdate({
-        userId: req.user_id,
-        requestId,
-        batchId: req.batch_id,
-        status: 'failed',
       });
     } catch (handlerErr) {
       logger.error({ handlerErr, requestId }, 'Failed to record job failure');
@@ -1460,7 +1413,6 @@ import * as svc from '../services/transcriptRequestService';
  *   POST   /me/transcripts            enqueue one request
  *   POST   /me/transcripts/bulk       enqueue a playlist/channel/list batch
  *   GET    /me/transcripts            list the user's requests
- *   GET    /me/transcripts/stream     SSE status stream
  *   GET    /me/transcripts/batches/:id  batch summary + entries
  *   GET    /me/transcripts/:id        one request
  *   DELETE /me/transcripts/:id        cancel a queued request
@@ -1541,7 +1493,7 @@ meTranscriptsRouter.delete('/:id', async (req, res, next) => {
 });
 ```
 
-(The `/bulk`, `/stream`, and `/batches/:id` routes are added in Tasks 11–12; they must be registered *before* `/:id` — Tasks 11 and 12 specify exactly where.)
+(The `/bulk` and `/batches/:id` routes are added in Task 11; they must be registered *before* `/:id` — Task 11 specifies exactly where.)
 
 - [ ] **Step 2: Delete the superseded singular route file**
 
@@ -1579,78 +1531,7 @@ git commit -m "feat(queue): async /me/transcripts list/create/get/cancel"
 
 ---
 
-## Task 11: SSE status stream
-
-**Files:**
-- Modify: `backend/src/routes/meTranscripts.ts`
-
-- [ ] **Step 1: Add the SSE route**
-
-In `backend/src/routes/meTranscripts.ts`, add this import near the top:
-
-```ts
-import { transcriptEvents, TranscriptUpdateEvent } from '../queue/transcriptQueue';
-```
-
-Then, **before** the `meTranscriptsRouter.get('/:id', ...)` route, add:
-
-```ts
-/**
- * SSE stream of the user's request status changes. The worker emits `update`
- * events on the in-process bus; we forward only this user's events. A 25 s
- * heartbeat keeps proxies from closing the idle connection.
- */
-meTranscriptsRouter.get('/stream', (req, res) => {
-  const userId = req.user!.id;
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
-  res.write('retry: 3000\n\n');
-
-  const onUpdate = (e: TranscriptUpdateEvent) => {
-    if (e.userId !== userId) return;
-    res.write(`data: ${JSON.stringify(e)}\n\n`);
-  };
-  transcriptEvents.on('update', onUpdate);
-
-  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
-
-  req.on('close', () => {
-    clearInterval(heartbeat);
-    transcriptEvents.off('update', onUpdate);
-  });
-});
-```
-
-- [ ] **Step 2: Verify it typechecks**
-
-Run from `backend/`: `npm run typecheck`
-Expected: no errors.
-
-- [ ] **Step 3: Manual verification**
-
-With the server running and a valid session cookie:
-
-```bash
-curl -N http://localhost:3001/me/transcripts/stream -b 'yt_session=...'
-```
-
-In another terminal, `POST /me/transcripts` a URL. Expected: the `curl -N` stream prints `data: {"userId":...,"status":"processing"}` then `...,"status":"completed"}`, plus `: ping` lines every 25 s.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add backend/src/routes/meTranscripts.ts
-git commit -m "feat(queue): add SSE stream for transcript status updates"
-```
-
----
-
-## Task 12: Bulk route and batch route
+## Task 11: Bulk route and batch route
 
 **Files:**
 - Modify: `backend/src/routes/meTranscripts.ts`
@@ -1800,7 +1681,7 @@ git commit -m "feat(queue): add bulk playlist/channel enqueue + batch route"
 
 ---
 
-## Task 13: Make `/v1/transcript` async
+## Task 12: Make `/v1/transcript` async
 
 **Files:**
 - Modify: `backend/src/routes/transcript.ts`
@@ -1908,7 +1789,7 @@ git commit -m "feat(queue)!: make /v1/transcript async (enqueue + poll)"
 
 ---
 
-## Task 14: Remove the dead synchronous bulk code
+## Task 13: Remove the dead synchronous bulk code
 
 **Files:**
 - Modify: `backend/src/services/transcriptService.ts`
@@ -1945,7 +1826,7 @@ git commit -m "refactor(queue): remove synchronous runBulkTranscripts (supersede
 
 ---
 
-## Task 15: Render Redis eviction-policy guard
+## Task 14: Render Redis eviction-policy guard
 
 **Files:**
 - Modify: `backend/src/queue/worker.ts`
@@ -1986,7 +1867,7 @@ git commit -m "feat(queue): warn at startup if Redis eviction policy risks job l
 
 ---
 
-## Task 16: End-to-end verification
+## Task 15: End-to-end verification
 
 No code changes — verify the whole backend before handing off to the frontend plan.
 
@@ -1997,7 +1878,7 @@ Expected: no type errors; all tests PASS.
 
 - [ ] **Step 2: Single-request happy path**
 
-Start `npm run dev`. `POST /me/transcripts` with a captioned video. Expected: `202` queued → SSE shows `processing` → `completed`; `GET /me/transcripts/:id` has `result` populated and `credits_used` is `0` or `1`.
+Start `npm run dev`. `POST /me/transcripts` with a captioned video. Expected: `202` queued → polling `GET /me/transcripts/:id` shows `processing` → `completed` with `result` populated and `credits_used` is `0` or `1`.
 
 - [ ] **Step 3: Duplicate de-dup**
 
@@ -2030,6 +1911,6 @@ git commit -m "test(queue): backend end-to-end verification fixes"
 
 ## Self-Review Notes
 
-- **Spec coverage:** migration + drop (Task 2), BullMQ in-process worker + concurrency (Tasks 1, 3, 8, 9), gate-at-enqueue/charge-on-success — credit deduction stays inside `getTranscript`, gate in Task 6 (Tasks 6, 13), SSE (Task 11), unified list (Task 10), bulk fan-out + batches (Tasks 7, 12), retry policy (Tasks 4, 8), 200 cap / 100 batch cap (Tasks 6, 7), retention (Tasks 7, 8), de-dup (Tasks 5, 6, 7), Redis eviction warning (Task 15), `runBulkTranscripts` removal (Task 14). All spec sections map to a task.
+- **Spec coverage:** migration + drop (Task 2), BullMQ in-process worker + concurrency (Tasks 1, 3, 8, 9), gate-at-enqueue/charge-on-success — credit deduction stays inside `getTranscript`, gate in Task 6 (Tasks 6, 12), unified list (Task 10), bulk fan-out + batches (Tasks 7, 11), retry policy (Tasks 4, 8), 200 cap / 100 batch cap (Tasks 6, 7), retention (Tasks 7, 8), de-dup (Tasks 5, 6, 7), Redis eviction warning (Task 14), `runBulkTranscripts` removal (Task 13). All spec sections map to a task.
 - **Naming consistency:** the service module is `transcriptRequestService` everywhere; the worker imports it as `svc`. Status strings (`queued`/`processing`/`completed`/`failed`/`canceled`) are consistent across migration, service, worker, and routes.
-- **Frontend** (queue panel, SSE hook, batch UI, viewer changes) is intentionally out of this plan — it is the follow-up plan and depends on these endpoints existing.
+- **Frontend** (queue panel, batch UI, viewer changes) is intentionally out of this plan — it is the follow-up plan and depends on these endpoints existing.
