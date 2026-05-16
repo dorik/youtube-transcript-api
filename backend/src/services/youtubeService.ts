@@ -36,8 +36,8 @@ export interface YouTubeFetchResult {
 
 export interface YouTubeMetadata {
 	videoId: string;
-	title: string;
-	channel: string;
+	title: string | null;
+	channel: string | null;
 	thumbnailUrl: string | null;
 }
 
@@ -521,11 +521,12 @@ export async function fetchYouTubeMetadata(
 		});
 		return {
 			videoId,
-			title: typeof data.title === 'string' ? data.title : 'Untitled',
+			// `null` (not 'Untitled') when oEmbed omits a field — a null is an
+			// honest "unknown" the caller / SQL COALESCE can react to, whereas a
+			// placeholder string would be persisted as if it were real data.
+			title: typeof data.title === 'string' ? data.title : null,
 			channel:
-				typeof data.author_name === 'string'
-					? data.author_name
-					: 'Unknown',
+				typeof data.author_name === 'string' ? data.author_name : null,
 			thumbnailUrl:
 				typeof data.thumbnail_url === 'string'
 					? data.thumbnail_url
@@ -534,12 +535,12 @@ export async function fetchYouTubeMetadata(
 	} catch (err) {
 		logger.warn(
 			{err, videoId},
-			'oEmbed metadata fetch failed; using placeholders',
+			'oEmbed metadata fetch failed; returning null metadata',
 		);
 		return {
 			videoId,
-			title: 'Untitled',
-			channel: 'Unknown',
+			title: null,
+			channel: null,
 			thumbnailUrl: null,
 		};
 	}

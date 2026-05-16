@@ -111,9 +111,9 @@ was cleared" (the `UPDATE` row count) instead of "rows deleted". The
   cannot overwrite a stored good one:
 
   ```sql
-  SET title            = COALESCE(EXCLUDED.title,            cached_transcripts.title),
-      channel          = COALESCE(EXCLUDED.channel,          cached_transcripts.channel),
-      duration_seconds = COALESCE(EXCLUDED.duration_seconds, cached_transcripts.duration_seconds),
+  SET title            = COALESCE(EXCLUDED.title,   cached_transcripts.title),
+      channel          = COALESCE(EXCLUDED.channel, cached_transcripts.channel),
+      duration_seconds = EXCLUDED.duration_seconds,
       source           = EXCLUDED.source,
       transcript_text  = EXCLUDED.transcript_text,
       segments         = EXCLUDED.segments,
@@ -124,9 +124,7 @@ was cleared" (the `UPDATE` row count) instead of "rows deleted". The
       expires_at       = NOW() + INTERVAL '30 days'
   ```
 
-- `getCached` keeps its existing `row.title ?? 'Untitled'` /
-  `row.channel ?? 'Unknown'` read fallback, so a never-resolved title still
-  displays gracefully.
+- `getCached` returns the row's `title`/`channel` as honest `string | null` — it does NOT coalesce to a placeholder. (An earlier draft kept a `?? 'Untitled'` fallback here; that was wrong: `getCached`'s result is reused as a write payload on the translation / Whisper-in-target paths, so a coalesced `'Untitled'` would be re-persisted past the `COALESCE` guard.) Display coalescing happens only at the response boundary — `formatResponse` and `getVideoMetadata`.
 
 Net effect: after a flush the row keeps its title. A re-fetch with a failed
 oEmbed writes `null` → `COALESCE` keeps the old title. A re-fetch with a
