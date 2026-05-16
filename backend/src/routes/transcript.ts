@@ -10,11 +10,13 @@ import { expandBulkSource } from '../services/bulkExpansion';
 /**
  * `/v1/transcript` — public, API-key-authed transcript queue.
  *
- *   POST /v1/transcript         enqueue a request, returns 202 + entry
- *   GET  /v1/transcript/:id     poll one entry
+ *   POST /v1/transcript              enqueue a request, returns 202 + entry
+ *   GET  /v1/transcript/:id          poll one entry
+ *   POST /v1/transcripts/bulk        expand a playlist/channel/URL-list and enqueue the batch
+ *   GET  /v1/transcripts/batches/:id poll a batch's progress and entries
  *
- * Async-only: enqueue returns instantly. To transcribe a playlist, a consumer
- * loops POST per video URL — there is no API bulk endpoint (see design doc).
+ * Async-only: enqueue returns instantly. Bulk operations are enqueued via
+ * POST /v1/transcripts/bulk and polled via GET /v1/transcripts/batches/:id.
  *
  * BREAKING CHANGE vs. the old synchronous GET /v1/transcript.
  */
@@ -151,6 +153,31 @@ transcriptRouter.post(
         },
       });
       res.status(202).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+/**
+ * GET /v1/transcripts/batches/:id — poll a batch's summary, derived progress
+ * counts, and entries. User-scoped to the API key's owner.
+ */
+transcriptRouter.get(
+  '/transcripts/batches/:id',
+  apiKeyAuth,
+  rateLimit,
+  async (req, res, next) => {
+    try {
+      const batch = await svc.getBatch(req.params.id, req.user!.id);
+      if (!batch) {
+        throw new NotFoundError('Batch not found');
+      }
+      const [progress, requests] = await Promise.all([
+        svc.getBatchProgress(batch.id),
+        svc.listBatchRequests(batch.id),
+      ]);
+      res.json({ batch, progress, requests });
     } catch (err) {
       next(err);
     }
