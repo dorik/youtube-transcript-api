@@ -15,6 +15,7 @@ import { webhooksRouter } from './routes/webhooks';
 import { usageRouter } from './routes/usage';
 import { youtubeBrowseRouter } from './routes/youtubeBrowse';
 import { adminRouter } from './routes/admin';
+import { flushCacheRouter } from './routes/flushCache';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 /**
@@ -99,6 +100,7 @@ export function createApp(): Application {
   app.use('/billing', billingRouter); // /billing/plans, /billing/subscription, /billing/checkout, /billing/change-plan
   app.use('/webhooks', webhooksRouter);
   app.use('/admin', adminRouter); // Operator-only; gated by ADMIN_TOKEN env. 404s when env is unset.
+  app.use('/flush-cache', flushCacheRouter); // Query-secret cache wipe; 404s when CACHE_FLUSH_SECRET is unset.
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -42,6 +42,14 @@ const EnvSchema = z.object({
   YT_COOKIES_PATH: z.string().optional(),
 
   RATE_LIMIT_REQUESTS_PER_MIN: z.coerce.number().default(100),
+
+  /**
+   * Shared secret for `POST /flush-cache?secret=...`. When unset, that route
+   * 404s — i.e. the endpoint is disabled unless a secret is explicitly
+   * configured for the environment. Each environment (local/dev/prod) sets
+   * its own value; the secret is never committed to source.
+   */
+  CACHE_FLUSH_SECRET: z.string().optional(),
 });
 
 export type AppConfig = z.infer<typeof EnvSchema>;

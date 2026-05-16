@@ -231,6 +231,45 @@ async function scanDelete(pattern: string): Promise<number> {
   return deleted;
 }
 
+/**
+ * TRUNCATE both Postgres cache tables atomically, returning the row counts
+ * that existed before the wipe (for telemetry). TRUNCATE is faster than
+ * DELETE and resets the identity counters; both tables are pure cache so
+ * losing the rows is safe.
+ */
+async function truncateCacheTables(): Promise<{
+  cached_transcripts: number;
+  translated_transcripts: number;
+}> {
+  let cachedRows = 0;
+  let translatedRows = 0;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: c } = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM cached_transcripts',
+    );
+    const { rows: tr } = await client.query<{ count: string }>(
+      'SELECT COUNT(*)::text AS count FROM translated_transcripts',
+    );
+    cachedRows = Number(c[0]?.count ?? 0);
+    translatedRows = Number(tr[0]?.count ?? 0);
+    await client.query(
+      'TRUNCATE cached_transcripts, translated_transcripts RESTART IDENTITY',
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  return {
+    cached_transcripts: cachedRows,
+    translated_transcripts: translatedRows,
+  };
+}
+
 export async function clearCache(videoId?: string): Promise<ClearCacheResult> {
   if (videoId) {
     // Targeted clear: only the keys/rows for this video.
@@ -257,42 +296,49 @@ export async function clearCache(videoId?: string): Promise<ClearCacheResult> {
   const t = await scanDelete('transcript:*');
   const tr = await scanDelete('translation:*');
 
-  // TRUNCATE is faster than DELETE and resets stats counters; we don't
-  // need before/after counts on the SQL side because both tables are pure
-  // cache. Wrap in a transaction so they truncate atomically.
-  let cachedRows = 0;
-  let translatedRows = 0;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const { rows: c } = await client.query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM cached_transcripts',
-    );
-    const { rows: tr2 } = await client.query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM translated_transcripts',
-    );
-    cachedRows = Number(c[0]?.count ?? 0);
-    translatedRows = Number(tr2[0]?.count ?? 0);
-    await client.query(
-      'TRUNCATE cached_transcripts, translated_transcripts RESTART IDENTITY',
-    );
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  const postgres = await truncateCacheTables();
 
   return {
     scope: 'all',
     videoId: null,
     redis: { transcripts: t, translations: tr },
-    postgres: {
-      cached_transcripts: cachedRows,
-      translated_transcripts: translatedRows,
-    },
+    postgres,
   };
+}
+
+export interface FlushAllResult {
+  /** Number of Redis keys that existed before the FLUSHALL. */
+  redis: { keysDeleted: number };
+  postgres: { cached_transcripts: number; translated_transcripts: number };
+}
+
+/**
+ * Hard reset of the entire cache.
+ *
+ * Unlike `clearCache()` — which scoped-deletes only `transcript:*` /
+ * `translation:*` keys — this runs Redis `FLUSHALL`, wiping the WHOLE Redis
+ * instance, `ratelimit:*` keys included. Those simply rebuild on the next
+ * request and self-expire in 60s, so the blast radius is acceptable for an
+ * operator "clear everything" action.
+ *
+ * The Postgres cache tables are truncated in the same call. This is the
+ * important half: without it, the cold tier would re-warm Redis with the
+ * old rows on the very next read and the flush would appear to do nothing.
+ */
+export async function flushAllCache(): Promise<FlushAllResult> {
+  // Snapshot the key count before the wipe so the caller gets a meaningful
+  // number back. Best-effort — a DBSIZE failure must not block the flush.
+  let keysDeleted = 0;
+  try {
+    keysDeleted = await redis.dbsize();
+  } catch (err) {
+    logger.warn({ err }, 'Cache: DBSIZE failed before FLUSHALL, count unavailable');
+  }
+
+  await redis.flushall();
+  const postgres = await truncateCacheTables();
+
+  return { redis: { keysDeleted }, postgres };
 }
 
 // ---------------------------------------------------------------------------
