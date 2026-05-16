@@ -1,64 +1,85 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import debounce from 'lodash/debounce';
-import { Plus, Search, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
+import { Plus, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { SEARCH_DEBOUNCE_MS, DEFAULT_PAGE_SIZE } from '@/lib/constants';
-import { HistoryRow } from '@/components/transcripts-history/HistoryRow';
-import { useTranscriptsQuery } from '@/features/transcripts';
+import { DEFAULT_PAGE_SIZE } from '@/lib/constants';
+import { getApiErrorMessage } from '@/lib/apiError';
+import { TranscriptRequestRow } from '@/components/transcripts/TranscriptRequestRow';
+import { BatchGroup } from '@/components/transcripts/BatchGroup';
+import {
+  useCancelTranscriptMutation,
+  useTranscriptRequestsQuery,
+} from '@/features/transcripts';
+import type { TranscriptBatch, TranscriptRequest } from '@/lib/api';
 
 const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 /**
- * Transcript history. One row per video the user has fetched, sorted by
- * most recent. Searchable by title / channel / video id. Clicking a row
- * routes to the path-based viewer at /dashboard/transcripts/[videoId].
+ * Unified transcripts list — standalone request rows plus collapsible batch
+ * groups, newest first. React Query polls while any row is queued/processing
+ * so statuses advance without a manual refresh; the Refresh button forces an
+ * immediate re-fetch.
  */
-export default function TranscriptsHistoryPage() {
+export default function TranscriptsPage() {
   const [offset, setOffset] = useState(0);
-  const [search, setSearch] = useState('');
-  const [query, setQuery] = useState('');
-  const updateQuery = useMemo(
-    () => debounce((next: string) => setQuery(next.trim()), SEARCH_DEBOUNCE_MS),
-    [],
+
+  const listQuery = useTranscriptRequestsQuery({ limit: PAGE_SIZE, offset });
+  const cancelMutation = useCancelTranscriptMutation();
+
+  const items = useMemo(
+    () => listQuery.data?.items ?? [],
+    [listQuery.data?.items],
   );
-  const handleSearchChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const next = event.target.value;
-      setSearch(next);
-      updateQuery(next);
-    },
-    [updateQuery],
-  );
-  const transcriptsQuery = useTranscriptsQuery({
-    limit: PAGE_SIZE,
-    offset,
-    q: query || undefined,
-  });
+  const total = listQuery.data?.total ?? 0;
+  const loading = listQuery.isLoading;
 
-  const items = transcriptsQuery.data?.items ?? [];
-  const total = transcriptsQuery.data?.total ?? 0;
-  const loading = transcriptsQuery.isLoading;
+  // Build the display order: each standalone request is its own entry; the
+  // rows of a batch collapse into a single batch entry positioned at the
+  // batch's newest row.
+  const entries = useMemo(() => {
+    const result: Array<
+      | { kind: 'request'; request: TranscriptRequest }
+      | { kind: 'batch'; batch: TranscriptBatch }
+    > = [];
+    const seenBatches = new Set<string>();
+    for (const r of items) {
+      if (!r.batch_id) {
+        result.push({ kind: 'request', request: r });
+        continue;
+      }
+      if (seenBatches.has(r.batch_id)) continue;
+      seenBatches.add(r.batch_id);
+      // The batch row carries enough to render the header; BatchGroup
+      // fetches full detail (label, progress) on expand.
+      result.push({
+        kind: 'batch',
+        batch: {
+          id: r.batch_id,
+          kind: 'videos',
+          source_url: null,
+          label: null,
+          total: 0,
+          created_at: r.created_at,
+        },
+      });
+    }
+    return result;
+  }, [items]);
 
-  useEffect(() => () => updateQuery.cancel(), [updateQuery]);
-
-  // Reset pagination whenever the active query changes.
-  useEffect(() => {
-    setOffset(0);
-  }, [query]);
-
-  function refresh() {
-    void transcriptsQuery.refetch();
+  function handleCancel(id: string) {
+    cancelMutation.mutate(id, {
+      onSuccess: () => toast.success('Request canceled'),
+      onError: (err) =>
+        toast.error(getApiErrorMessage(err, 'Could not cancel request')),
+    });
   }
 
-  const hasResults = items.length > 0;
-  const hasNoResults = items.length === 0 && !loading;
+  const hasResults = entries.length > 0;
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -66,12 +87,20 @@ export default function TranscriptsHistoryPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Transcripts</h1>
           <p className="text-muted-foreground text-sm">
-            Every video you&apos;ve fetched. Click any item to re-open the viewer.
+            Every transcript you&apos;ve requested. New requests run in the
+            background — you can queue more right away.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void listQuery.refetch()}
+            disabled={loading}
+          >
+            <RefreshCw
+              className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`}
+            />
             Refresh
           </Button>
           <Button asChild>
@@ -83,18 +112,6 @@ export default function TranscriptsHistoryPage() {
         </div>
       </div>
 
-      {/* Search bar */}
-      <div className="relative max-w-md">
-        <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search by title, channel, or video id…"
-          value={search}
-          onChange={handleSearchChange}
-          className="pl-9"
-        />
-      </div>
-
-      {/* List */}
       {loading && (
         <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -103,23 +120,53 @@ export default function TranscriptsHistoryPage() {
         </div>
       )}
 
-      {hasNoResults && (
-        <EmptyState query={query} />
+      {!loading && !hasResults && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">No transcripts yet</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Request your first transcript from a YouTube URL — it&apos;ll
+              appear here and process in the background.
+            </p>
+            <Button asChild>
+              <Link href="/dashboard/transcripts/new">
+                <Plus className="h-4 w-4 mr-1.5" />
+                New transcript
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       {hasResults && (
         <div className="space-y-2">
-          {items.map((item) => (
-            <HistoryRow key={item.video_id} item={item} />
-          ))}
+          {entries.map((entry) =>
+            entry.kind === 'request' ? (
+              <TranscriptRequestRow
+                key={entry.request.id}
+                request={entry.request}
+                onCancel={handleCancel}
+                canceling={cancelMutation.isPending}
+              />
+            ) : (
+              <BatchGroup
+                key={entry.batch.id}
+                batch={entry.batch}
+                onCancel={handleCancel}
+                canceling={cancelMutation.isPending}
+              />
+            ),
+          )}
         </div>
       )}
 
-      {/* Pagination */}
       {hasResults && total > PAGE_SIZE && (
         <div className="flex items-center justify-between text-sm pt-2">
           <span className="text-muted-foreground">
-            Showing {offset + 1}–{Math.min(offset + items.length, total)} of {total}
+            Showing {offset + 1}–{Math.min(offset + items.length, total)} of{' '}
+            {total}
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -142,41 +189,5 @@ export default function TranscriptsHistoryPage() {
         </div>
       )}
     </div>
-  );
-}
-
-function EmptyState({ query }: { query: string }) {
-  if (query) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">No matches</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Nothing in your history matches &quot;{query}&quot;.
-          </p>
-        </CardContent>
-      </Card>
-    );
-  }
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">No transcripts yet</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">
-          Fetch your first transcript from a YouTube URL — it&apos;ll show up here for
-          quick access later.
-        </p>
-        <Button asChild>
-          <Link href="/dashboard/transcripts/new">
-            <Plus className="h-4 w-4 mr-1.5" />
-            New transcript
-          </Link>
-        </Button>
-      </CardContent>
-    </Card>
   );
 }
