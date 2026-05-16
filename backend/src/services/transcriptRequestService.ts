@@ -124,6 +124,7 @@ export async function findDuplicateRequest(
        AND request->>'format' = $3
        AND COALESCE(request->>'language', '') = $4
        AND COALESCE(request->>'translate_to', '') = $5
+       AND COALESCE((request->>'native_only')::boolean, false) = $6
      ORDER BY (status = 'completed'), created_at DESC
      LIMIT 1`,
     [
@@ -132,6 +133,7 @@ export async function findDuplicateRequest(
       cfg.format,
       cfg.language ?? '',
       cfg.translate_to ?? '',
+      cfg.native_only ?? false,
     ],
   );
   return rows[0] ?? null;

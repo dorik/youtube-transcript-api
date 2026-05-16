@@ -56,3 +56,5 @@ CREATE INDEX IF NOT EXISTS idx_transcript_requests_status
   ON transcript_requests(status);
 CREATE INDEX IF NOT EXISTS idx_transcript_requests_batch
   ON transcript_requests(batch_id);
+CREATE INDEX IF NOT EXISTS idx_transcript_requests_user_video
+  ON transcript_requests(user_id, video_id, status);
