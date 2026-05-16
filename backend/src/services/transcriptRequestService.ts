@@ -644,7 +644,7 @@ export async function enqueueBatch(
             duration_seconds, thumbnail_url, batch_id, batch_position,
             completed_at)
          VALUES ($1,'dashboard',$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                 CASE WHEN $2 = 'completed' THEN NOW() ELSE NULL END)
+                 CASE WHEN $11 THEN NOW() ELSE NULL END)
          RETURNING ${ROW_COLUMNS}`,
         [
           input.userId,
@@ -657,6 +657,7 @@ export async function enqueueBatch(
           v.thumbnail_url ?? null,
           batch.id,
           i,
+          status === 'completed',
         ],
       );
       requests.push(rows[0]);
