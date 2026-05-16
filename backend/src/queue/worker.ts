@@ -164,6 +164,22 @@ export async function startWorker(): Promise<void> {
     logger.error({ err }, 'BullMQ worker error');
   });
 
+  // BullMQ silently loses jobs if Redis evicts keys. Render's free Key Value
+  // datastore can default to an eviction policy other than noeviction — warn
+  // loudly so the operator fixes it in the Render dashboard.
+  try {
+    const policy = await queueConnection.config('GET', 'maxmemory-policy');
+    const value = Array.isArray(policy) ? policy[1] : undefined;
+    if (value && value !== 'noeviction') {
+      logger.warn(
+        { maxmemoryPolicy: value },
+        'Redis maxmemory-policy is not "noeviction" — queued jobs may be evicted. Set it to noeviction.',
+      );
+    }
+  } catch (err) {
+    logger.info({ err }, 'Could not read Redis maxmemory-policy (non-fatal)');
+  }
+
   // Daily retention sweep. `jobId` keeps the repeatable job unique across
   // restarts so we don't accumulate duplicate schedules.
   await transcriptQueue.add(
