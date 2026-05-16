@@ -1,6 +1,13 @@
 import { pool } from '../db/pool';
 import { OutputFormat } from './formatters';
 import { TranscriptResponse } from './transcriptService';
+import { extractVideoId } from '../utils/youtubeUrl';
+import { getCreditState } from './creditService';
+import { PaymentRequiredError, ApiError } from '../utils/errors';
+import {
+  enqueueTranscriptJob,
+  removeTranscriptJob,
+} from '../queue/transcriptQueue';
 
 export type RequestStatus =
   | 'queued'
@@ -135,6 +142,102 @@ export async function findDuplicateRequest(
       cfg.translate_to ?? '',
       cfg.native_only ?? false,
     ],
+  );
+  return rows[0] ?? null;
+}
+
+/** Max queued+processing requests a single user may hold at once. */
+export const PENDING_REQUEST_CAP = 200;
+
+export class TooManyPendingError extends ApiError {
+  constructor(cap: number) {
+    super(
+      429,
+      'TOO_MANY_PENDING',
+      'too_many_requests',
+      `You already have the maximum of ${cap} requests in the queue. Wait for some to finish.`,
+      { pending_cap: cap },
+    );
+  }
+}
+
+export interface EnqueueSingleInput {
+  userId: string;
+  source: 'api' | 'dashboard';
+  config: TranscriptRequestConfig;
+}
+
+/**
+ * Validate, gate on credits + pending cap, de-dup, then insert a queued row
+ * and add the BullMQ job. Returns the row the caller should respond with —
+ * either a freshly created `queued` row or an existing duplicate.
+ */
+export async function enqueueSingleRequest(
+  input: EnqueueSingleInput,
+): Promise<TranscriptRequestRow> {
+  // extractVideoId throws ValidationError on a malformed URL.
+  const videoId = extractVideoId(input.config.url);
+
+  const duplicate = await findDuplicateRequest(
+    input.userId,
+    videoId,
+    input.config,
+  );
+  if (duplicate) return duplicate;
+
+  const [{ balance }, pending] = await Promise.all([
+    getCreditState(input.userId),
+    countPendingRequests(input.userId),
+  ]);
+
+  if (pending >= PENDING_REQUEST_CAP) {
+    throw new TooManyPendingError(PENDING_REQUEST_CAP);
+  }
+  if (balance - pending < 1) {
+    throw new PaymentRequiredError(1, balance - pending);
+  }
+
+  const { rows } = await pool.query<TranscriptRequestRow>(
+    `INSERT INTO transcript_requests (user_id, source, status, request, video_id)
+     VALUES ($1, $2, 'queued', $3, $4)
+     RETURNING ${ROW_COLUMNS}`,
+    [input.userId, input.source, JSON.stringify(input.config), videoId],
+  );
+  const row = rows[0];
+
+  const jobId = await enqueueTranscriptJob(row.id);
+  await pool.query(
+    `UPDATE transcript_requests SET bullmq_job_id = $1 WHERE id = $2`,
+    [jobId, row.id],
+  );
+  row.bullmq_job_id = jobId;
+  return row;
+}
+
+/**
+ * Cancel a queued request. Only `queued` rows can be canceled — a row already
+ * `processing` cannot have its yt-dlp/Whisper run force-killed.
+ */
+export async function cancelRequest(
+  id: string,
+  userId: string,
+): Promise<TranscriptRequestRow | null> {
+  const row = await getUserRequest(id, userId);
+  if (!row) return null;
+  if (row.status !== 'queued') {
+    throw new ApiError(
+      409,
+      'NOT_CANCELABLE',
+      'conflict',
+      `A request that is ${row.status} cannot be canceled.`,
+    );
+  }
+  if (row.bullmq_job_id) await removeTranscriptJob(row.bullmq_job_id);
+  const { rows } = await pool.query<TranscriptRequestRow>(
+    `UPDATE transcript_requests
+     SET status = 'canceled', completed_at = NOW()
+     WHERE id = $1 RETURNING ${ROW_COLUMNS}`,
+    [id],
   );
   return rows[0] ?? null;
 }
