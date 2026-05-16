@@ -227,9 +227,13 @@ All transcript routes live under `/me/transcripts` (dashboard) and `/v1`
 | `DELETE /me/transcripts/batches/:id` | Cancel a batch — cancels every still-`queued` child. |
 | `POST /v1/transcript` | API mirror of single enqueue; returns `202` + entry id. |
 | `GET /v1/transcript/:id` | API mirror to poll one entry. |
+| `POST /v1/transcripts/bulk` | Expand a playlist/channel/URL-list and enqueue the batch; returns `202` + `{ batch, requests }`. |
+| `GET /v1/transcripts/batches/:id` | API mirror to poll a batch. |
 
-There is no API bulk endpoint — bulk fan-out is a dashboard-only feature. API
-consumers transcribe a playlist by looping `POST /v1/transcript` per video.
+A public bulk endpoint was added later — `POST /v1/transcripts/bulk` plus
+`GET /v1/transcripts/batches/:id` — see
+`docs/superpowers/specs/2026-05-16-public-bulk-transcript-api-design.md`. It is
+queue-backed (enqueue + poll), not synchronous.
 
 Literal sub-paths (`/bulk`, `/batches/...`) are registered before the `/:id`
 param route so Express matches them correctly.
