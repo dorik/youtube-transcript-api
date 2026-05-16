@@ -22,6 +22,7 @@ vi.mock('./cacheService', () => cacheMock);
 import {
   enqueueSingleRequest,
   cancelRequest,
+  cancelBatch,
   enqueueBatch,
 } from './transcriptRequestService';
 import { PaymentRequiredError, ConflictError } from '../utils/errors';
@@ -91,6 +92,85 @@ describe('cancelRequest', () => {
       .mockResolvedValueOnce({ rows: [] }); // conditional UPDATE — 0 rows matched
 
     await expect(cancelRequest('r1', 'u1')).rejects.toBeInstanceOf(ConflictError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelBatch
+// ---------------------------------------------------------------------------
+
+describe('cancelBatch', () => {
+  const BATCH_ROW = {
+    id: 'batch-1',
+    user_id: 'u1',
+    kind: 'videos',
+    source_url: null,
+    label: null,
+    total: 3,
+    created_at: new Date(),
+  };
+
+  it('cancels only queued children and removes their BullMQ jobs', async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [BATCH_ROW] }) // getBatch SELECT
+      .mockResolvedValueOnce({
+        // conditional UPDATE ... WHERE status = 'queued' RETURNING
+        rows: [
+          { id: 'r1', bullmq_job_id: 'job-1' },
+          { id: 'r2', bullmq_job_id: 'job-2' },
+        ],
+      });
+
+    const result = await cancelBatch('batch-1', 'u1');
+
+    expect(result?.canceledCount).toBe(2);
+    expect(result?.batch.id).toBe('batch-1');
+    // The UPDATE is scoped to queued rows of this batch only.
+    const updateCall = queryMock.mock.calls[1];
+    expect(updateCall[0]).toContain("status = 'canceled'");
+    expect(updateCall[0]).toContain("WHERE batch_id = $1 AND status = 'queued'");
+    expect(updateCall[1]).toEqual(['batch-1']);
+    // A job is removed for each canceled (queued) child — not for
+    // processing/completed children, which the UPDATE never returns.
+    expect(queueMock.removeTranscriptJob).toHaveBeenCalledTimes(2);
+    expect(queueMock.removeTranscriptJob).toHaveBeenCalledWith('job-1');
+    expect(queueMock.removeTranscriptJob).toHaveBeenCalledWith('job-2');
+  });
+
+  it('skips job removal for a canceled child with no bullmq_job_id', async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [BATCH_ROW] }) // getBatch SELECT
+      .mockResolvedValueOnce({
+        rows: [{ id: 'r1', bullmq_job_id: null }],
+      }); // conditional UPDATE
+
+    const result = await cancelBatch('batch-1', 'u1');
+
+    expect(result?.canceledCount).toBe(1);
+    expect(queueMock.removeTranscriptJob).not.toHaveBeenCalled();
+  });
+
+  it('reports zero canceled when no children are still queued', async () => {
+    queryMock
+      .mockResolvedValueOnce({ rows: [BATCH_ROW] }) // getBatch SELECT
+      .mockResolvedValueOnce({ rows: [] }); // UPDATE matched nothing
+
+    const result = await cancelBatch('batch-1', 'u1');
+
+    expect(result?.canceledCount).toBe(0);
+    expect(queueMock.removeTranscriptJob).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a missing batch or one owned by another user', async () => {
+    // getBatch is user-scoped (WHERE id = $1 AND user_id = $2) → no rows.
+    queryMock.mockResolvedValueOnce({ rows: [] }); // getBatch SELECT
+
+    const result = await cancelBatch('batch-1', 'other-user');
+
+    expect(result).toBeNull();
+    // No UPDATE and no job removal when ownership check fails.
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(queueMock.removeTranscriptJob).not.toHaveBeenCalled();
   });
 });
 

@@ -279,6 +279,47 @@ export async function cancelRequest(
   return rows[0];
 }
 
+export interface CancelBatchResult {
+  batch: BatchRow;
+  canceledCount: number;
+}
+
+/**
+ * Cancel every still-`queued` child of a batch. Rows already
+ * `processing`/`completed`/`failed`/`canceled` are left untouched — in-flight
+ * work cannot be force-killed. Scoped to the owning user.
+ */
+export async function cancelBatch(
+  id: string,
+  userId: string,
+): Promise<CancelBatchResult | null> {
+  const batch = await getBatch(id, userId);
+  if (!batch) return null;
+
+  // Conditional on each child still being `queued` — closes the race where
+  // the worker promotes a row to `processing` between the batch lookup and
+  // this UPDATE. Only rows that were still `queued` at UPDATE time are
+  // returned (and thus get their BullMQ job removed).
+  const { rows } = await pool.query<
+    Pick<TranscriptRequestRow, 'id' | 'bullmq_job_id'>
+  >(
+    `UPDATE transcript_requests
+     SET status = 'canceled', completed_at = NOW()
+     WHERE batch_id = $1 AND status = 'queued'
+     RETURNING id, bullmq_job_id`,
+    [batch.id],
+  );
+
+  // Best-effort job removal, exactly as cancelRequest does — a job the worker
+  // has already picked up cannot be removed, but the worker re-checks the
+  // row's `canceled` status before doing work.
+  for (const row of rows) {
+    if (row.bullmq_job_id) await removeTranscriptJob(row.bullmq_job_id);
+  }
+
+  return { batch, canceledCount: rows.length };
+}
+
 // ---------------------------------------------------------------------------
 // Worker-facing status mutations
 // ---------------------------------------------------------------------------

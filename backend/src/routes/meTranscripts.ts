@@ -17,6 +17,7 @@ import { extractVideoId } from '../utils/youtubeUrl';
  *   POST   /me/transcripts/bulk       enqueue a playlist/channel/list batch
  *   GET    /me/transcripts            list the user's requests
  *   GET    /me/transcripts/batches/:id  batch summary + entries
+ *   DELETE /me/transcripts/batches/:id  cancel a batch's queued children
  *   GET    /me/transcripts/:id        one request
  *   DELETE /me/transcripts/:id        cancel a queued request
  *
@@ -195,6 +196,23 @@ meTranscriptsRouter.get('/batches/:id', async (req, res, next) => {
       svc.listBatchRequests(batch.id),
     ]);
     res.json({ batch, progress, requests });
+  } catch (err) {
+    next(err);
+  }
+});
+
+meTranscriptsRouter.delete('/batches/:id', async (req, res, next) => {
+  try {
+    const result = await svc.cancelBatch(req.params.id, req.user!.id);
+    if (!result) {
+      throw new NotFoundError('Batch not found');
+    }
+    const progress = await svc.getBatchProgress(result.batch.id);
+    res.json({
+      batch: result.batch,
+      canceled: result.canceledCount,
+      progress,
+    });
   } catch (err) {
     next(err);
   }
