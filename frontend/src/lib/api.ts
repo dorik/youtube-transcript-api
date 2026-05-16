@@ -198,6 +198,79 @@ export interface TranscriptResponse {
   fetched_at: string;
 }
 
+export type RequestStatus =
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+export interface TranscriptRequestConfig {
+  url: string;
+  format: string;
+  language?: string;
+  native_only?: boolean;
+  translate_to?: string;
+}
+
+/** A transcript_requests row — the unit of the async queue. */
+export interface TranscriptRequest {
+  id: string;
+  source: 'api' | 'dashboard';
+  status: RequestStatus;
+  request: TranscriptRequestConfig;
+  video_id: string | null;
+  title: string | null;
+  channel: string | null;
+  duration_seconds: number | null;
+  thumbnail_url: string | null;
+  attempts: number;
+  result: TranscriptResponse | null;
+  credits_used: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  batch_id: string | null;
+  batch_position: number | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface TranscriptBatch {
+  id: string;
+  kind: 'playlist' | 'channel' | 'videos';
+  source_url: string | null;
+  label: string | null;
+  total: number;
+  created_at: string;
+}
+
+export interface BatchProgress {
+  queued: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+}
+
+export interface RequestListResponse {
+  items: TranscriptRequest[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface BatchDetailResponse {
+  batch: TranscriptBatch;
+  progress: BatchProgress;
+  requests: TranscriptRequest[];
+}
+
+export interface BatchCreateResponse {
+  batch: TranscriptBatch;
+  requests: TranscriptRequest[];
+}
+
 /* -------------------- API surface -------------------- */
 
 export const auth = {
