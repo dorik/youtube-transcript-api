@@ -59,7 +59,46 @@ async function processTranscribe(job: Job<TranscriptJobData>): Promise<void> {
       nativeOnly: req.request.native_only,
       translateTo: req.request.translate_to,
     });
-    await svc.markCompleted(requestId, result);
+
+    // Post-success persistence: markCompleted + logApiRequest must be
+    // retried independently from the BullMQ retry loop.
+    //
+    // WHY: getTranscript() already deducted the credit (via deductCredits
+    // inside transcriptService). If markCompleted throws a transient DB
+    // error and we let the exception bubble, BullMQ will either retry the
+    // whole job (where getTranscript will cache-hit and charge 0 — still
+    // OK) OR, on the final exhausted attempt, the `failed` event handler
+    // will mark the row `failed`. That last outcome violates the spec
+    // invariant "failed requests cost nothing" because the credit was
+    // already charged on an earlier attempt. A small bounded retry here
+    // makes persistence resilient to transient DB blips without needing a
+    // refund flow (which the spec explicitly excludes).
+    const PERSIST_RETRIES = 3;
+    const PERSIST_DELAY_MS = 500;
+    for (let i = 0; i < PERSIST_RETRIES; i++) {
+      try {
+        await svc.markCompleted(requestId, result);
+        break; // success — stop retrying
+      } catch (persistErr) {
+        if (i < PERSIST_RETRIES - 1) {
+          logger.warn(
+            { persistErr, requestId, persistAttempt: i + 1 },
+            'markCompleted failed after credit was charged; retrying persistence',
+          );
+          await new Promise((resolve) => setTimeout(resolve, PERSIST_DELAY_MS));
+        } else {
+          // All persistence retries exhausted. Re-throw so BullMQ retries
+          // the whole job (getTranscript will cache-hit at 0 cost) rather
+          // than silently leaving the row in `processing` forever.
+          logger.error(
+            { persistErr, requestId },
+            'markCompleted failed on all retries after credit was charged; letting BullMQ retry the job',
+          );
+          throw persistErr;
+        }
+      }
+    }
+
     await svc.logApiRequest({
       userId: req.user_id,
       endpoint: req.source === 'api' ? '/v1/transcript' : '/me/transcripts',

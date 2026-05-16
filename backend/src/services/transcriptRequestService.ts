@@ -196,6 +196,14 @@ export async function enqueueSingleRequest(
   if (pending >= PENDING_REQUEST_CAP) {
     throw new TooManyPendingError(PENDING_REQUEST_CAP);
   }
+  // Advisory best-effort gate: balance and pending-count are read here
+  // WITHOUT a transaction lock, so two concurrent requests can both pass
+  // this check simultaneously. The authoritative enforcement is the
+  // worker-time deductCredits(), which uses SELECT ... FOR UPDATE and
+  // throws PaymentRequiredError (classified as permanent → row marked
+  // `failed` with INSUFFICIENT_CREDITS). Under a concurrency race a user
+  // may therefore end up with a few rows in `failed` status rather than
+  // receiving a clean 402 at enqueue time. This is an accepted trade-off.
   if (balance - pending < 1) {
     throw new PaymentRequiredError(1, balance - pending);
   }
@@ -554,6 +562,14 @@ export async function enqueueBatch(
   if (pending + uncachedCount > PENDING_REQUEST_CAP) {
     throw new TooManyPendingError(PENDING_REQUEST_CAP);
   }
+  // Advisory best-effort gate: balance and pending-count are read here
+  // WITHOUT a transaction lock, so two concurrent batch submissions can
+  // both pass this check simultaneously. The authoritative enforcement is
+  // the worker-time deductCredits(), which uses SELECT ... FOR UPDATE and
+  // throws PaymentRequiredError (classified as permanent → row marked
+  // `failed` with INSUFFICIENT_CREDITS). Under a concurrency race a user
+  // may therefore end up with a few rows in `failed` status rather than
+  // receiving a clean 402 at enqueue time. This is an accepted trade-off.
   if (balance - pending < uncachedCount) {
     throw new PaymentRequiredError(uncachedCount, balance - pending);
   }
