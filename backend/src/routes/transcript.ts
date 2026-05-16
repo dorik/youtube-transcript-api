@@ -46,7 +46,8 @@ transcriptRouter.post(
         source: 'api',
         config: parsed.data,
       });
-      res.status(row.status === 'queued' ? 202 : 200).json(row);
+      // 202 for queued/processing (still in flight); 200 only for a completed cache hit
+      res.status(row.status === 'queued' || row.status === 'processing' ? 202 : 200).json(row);
     } catch (err) {
       next(err);
     }
