@@ -1,9 +1,6 @@
 import { API_BASE_URL } from '@/lib/api';
 import type { Format } from './types';
 
-/**
- * Parse the bulk URL textarea: one URL/id per line, blank lines dropped.
- */
 export function parseVideoLines(text: string): Array<{ url: string }> {
   return text
     .split('\n')
@@ -12,10 +9,6 @@ export function parseVideoLines(text: string): Array<{ url: string }> {
     .map((url) => ({ url }));
 }
 
-/**
- * Pull a video id out of a YouTube URL for use as a tab label. Falls back
- * to the truncated raw URL if we can't recognize a known pattern.
- */
 export function shortVideoId(url: string): string {
   const m =
     url.match(/[?&]v=([a-zA-Z0-9_-]{11})/) ??
@@ -25,9 +18,6 @@ export function shortVideoId(url: string): string {
   return m ? m[1] : url.slice(0, 14) + (url.length > 14 ? '…' : '');
 }
 
-/**
- * Options shared across all curl preview variants.
- */
 interface TranscriptOpts {
   format: Format;
   language: string;
@@ -36,15 +26,19 @@ interface TranscriptOpts {
   bearerPlaintext: string | null;
 }
 
-/**
- * Discriminated input for `buildCurlPreview`. Only the `video` mode remains
- * now that the playlist/channel bulk endpoints have been removed from the
- * backend.
- */
-export type CurlPreviewInput = {
-  mode: 'video';
-  firstUrl: string | null;
-} & TranscriptOpts;
+/** Curl-preview input — one variant per playground tab. */
+export type CurlPreviewInput = (
+  | { mode: 'video'; firstUrl: string | null }
+  | { mode: 'playlist'; playlist: string; limit: number }
+  | {
+      mode: 'channel';
+      channel: string;
+      channelMode: 'videos' | 'latest' | 'search';
+      channelQuery: string;
+      limit: number;
+    }
+) &
+  TranscriptOpts;
 
 function bearerHeader(bearerPlaintext: string | null): string {
   const keyPlaceholder = bearerPlaintext
@@ -53,15 +47,11 @@ function bearerHeader(bearerPlaintext: string | null): string {
   return `  -H 'Authorization: Bearer ${keyPlaceholder}'`;
 }
 
-/**
- * Build a JSON body object for the POST /v1/transcript curl snippet, omitting
- * fields that are at their defaults so the snippet stays minimal.
- */
-function buildTranscriptBody(
-  url: string,
+/** Add the shared transcript options to a request body, omitting defaults. */
+function withTranscriptOpts(
+  body: Record<string, unknown>,
   opts: TranscriptOpts,
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = { url };
   if (opts.format !== 'json') body.format = opts.format;
   if (opts.language !== 'auto') body.language = opts.language;
   if (opts.nativeOnly) body.native_only = true;
@@ -69,20 +59,42 @@ function buildTranscriptBody(
   return body;
 }
 
-/**
- * Build the curl snippet shown in the preview pane. Always uses the public
- * API form regardless of whether the in-browser request used the cookie
- * session — this is the code a developer would paste into their own app.
- *
- * POST /v1/transcript enqueues the request and returns a TranscriptRequest;
- * poll GET /v1/transcript/:id until status is `completed` or `failed`.
- */
-export function buildCurlPreview(input: CurlPreviewInput): string {
-  const body = buildTranscriptBody(input.firstUrl ?? '<URL>', input);
+function curl(path: string, body: Record<string, unknown>, bearer: string | null): string {
   return [
-    `curl -X POST '${API_BASE_URL}/v1/transcript' \\`,
-    bearerHeader(input.bearerPlaintext) + ` \\`,
+    `curl -X POST '${API_BASE_URL}${path}' \\`,
+    bearerHeader(bearer) + ` \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -d '${JSON.stringify(body)}'`,
   ].join('\n');
+}
+
+/**
+ * Build the curl snippet for the active tab. The Videos tab hits
+ * POST /v1/transcript; the Playlist/Channel tabs hit POST /v1/transcripts/bulk
+ * (which returns queued entries the caller then polls).
+ */
+export function buildCurlPreview(input: CurlPreviewInput): string {
+  if (input.mode === 'video') {
+    const body = withTranscriptOpts(
+      { url: input.firstUrl ?? '<URL>' },
+      input,
+    );
+    return curl('/v1/transcript', body, input.bearerPlaintext);
+  }
+  if (input.mode === 'playlist') {
+    const body = withTranscriptOpts(
+      { playlist: input.playlist || '<PLAYLIST_URL>', limit: input.limit },
+      input,
+    );
+    return curl('/v1/transcripts/bulk', body, input.bearerPlaintext);
+  }
+  const body: Record<string, unknown> = {
+    channel: input.channel || '<CHANNEL_URL>',
+    channelMode: input.channelMode,
+    limit: input.limit,
+  };
+  if (input.channelMode === 'search') {
+    body.channelQuery = input.channelQuery || '<QUERY>';
+  }
+  return curl('/v1/transcripts/bulk', withTranscriptOpts(body, input), input.bearerPlaintext);
 }
