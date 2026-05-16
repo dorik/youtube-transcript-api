@@ -232,6 +232,13 @@ export function PlaygroundClient() {
 				return;
 			}
 
+			const sharedOptions = (): Record<string, unknown> => ({
+				format,
+				language: language === 'auto' ? undefined : language,
+				native_only: nativeOnly || undefined,
+				translate_to: translateTo === 'none' ? undefined : translateTo,
+			});
+
 			// Map a settled TranscriptRequest to a result row.
 			const toEntry = (r: TranscriptRequest): BulkResultEntry =>
 				r.status === 'completed' && r.result
@@ -255,7 +262,6 @@ export function PlaygroundClient() {
 				if (tab === 'videos') {
 					if (videoList.length === 0) {
 						toast.error('Add at least one YouTube URL or video ID.');
-						setSubmitting(false);
 						return;
 					}
 					const acc: BulkResultEntry[] = [];
@@ -283,7 +289,6 @@ export function PlaygroundClient() {
 				if (tab === 'playlist') {
 					if (!playlistInput.trim()) {
 						toast.error('Paste a playlist URL or ID.');
-						setSubmitting(false);
 						return;
 					}
 					body = {
@@ -294,12 +299,10 @@ export function PlaygroundClient() {
 				} else {
 					if (!channelInput.trim()) {
 						toast.error('Paste a channel URL, ID, or handle.');
-						setSubmitting(false);
 						return;
 					}
 					if (channelMode === 'search' && !channelQuery.trim()) {
 						toast.error('Enter a search query for channel search mode.');
-						setSubmitting(false);
 						return;
 					}
 					body = {
@@ -323,7 +326,6 @@ export function PlaygroundClient() {
 				setSubmitting(false);
 			}
 		},
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- sharedOptions closes only over format/language/nativeOnly/translateTo, which are all listed below; hoisted function reference is stable
 		[
 			selectedPlaintext,
 			tab,
@@ -348,15 +350,6 @@ export function PlaygroundClient() {
 			toast.error('Copy failed');
 		}
 	}, [curlPreview]);
-
-	function sharedOptions(): Record<string, unknown> {
-		return {
-			format,
-			language: language === 'auto' ? undefined : language,
-			native_only: nativeOnly || undefined,
-			translate_to: translateTo === 'none' ? undefined : translateTo,
-		};
-	}
 
 	return (
 		<div className="max-w-7xl">
