@@ -11,27 +11,11 @@ import {
   listPlaylistVideos,
   searchYouTube,
 } from '../services/youtubeBrowseService';
-import { runBulkTranscripts } from '../services/transcriptService';
-import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { PaymentRequiredError, ValidationError } from '../utils/errors';
 
 export const youtubeBrowseRouter = Router();
 
 const LimitSchema = z.coerce.number().int().min(1).max(50).default(10);
-
-// Bulk-transcript endpoints loop `getTranscript()` per item, so the per-call
-// upper bound is lower than the discovery endpoints (max 50 → max 20).
-// Each item can deduct up to 1 credit and trigger a Whisper download, so
-// 20 ≈ a few minutes of sync HTTP response time in the worst case. Bigger
-// batches belong in the (future) job queue.
-const BulkLimitSchema = z.coerce.number().int().min(1).max(20).default(10);
-const FormatSchema = z
-  .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
-  .default('json');
-const NativeOnlySchema = z
-  .string()
-  .optional()
-  .transform((v) => v === 'true' || v === '1' || v === 'yes');
 
 const SearchSchema = z.object({
   q: z.string().min(1).optional(),
@@ -190,145 +174,6 @@ youtubeBrowseRouter.get('/playlist/videos', apiKeyAuth, rateLimit, async (req, r
     await chargeBrowseCredit(req.user!.id, 'playlist_videos', count, { playlist, videos: count });
     void logBrowseRequest(req.user!.id, req.apiKeyId ?? null, '/v1/playlist/videos', count);
     res.json({ ...result, credits_used: count });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Bulk transcript endpoints — playlist / channel one-call flow.
-//
-// `/playlist/videos` and `/channel/{...}` return only the *list* of videos.
-// To actually transcribe them, the caller had to loop /v1/transcript per
-// item. These routes do both halves in a single HTTP call: expand the
-// playlist/channel internally, then run transcripts with bounded concurrency.
-//
-// Billing here is per-transcript-delivered (1 credit per fresh transcript;
-// cache hits are 0). The list-expansion step is NOT separately billed —
-// it's the route's internal mechanism, not a discoverable surface.
-// ---------------------------------------------------------------------------
-
-const PlaylistTranscriptsSchema = z.object({
-  playlist: z.string().min(1).optional(),
-  url: z.string().min(1).optional(),
-  list: z.string().min(1).optional(),
-  limit: BulkLimitSchema,
-  format: FormatSchema,
-  language: z.string().min(2).max(10).optional(),
-  native_only: NativeOnlySchema,
-  translate_to: z.string().min(2).max(10).optional(),
-});
-
-youtubeBrowseRouter.get('/playlist/transcripts', apiKeyAuth, rateLimit, async (req, res, next) => {
-  const startedAt = Date.now();
-  try {
-    const parsed = PlaylistTranscriptsSchema.safeParse(req.query);
-    if (!parsed.success) {
-      throw new ValidationError('Invalid query parameters', {
-        issues: parsed.error.flatten().fieldErrors,
-      });
-    }
-    const playlist = parsed.data.playlist ?? parsed.data.url ?? parsed.data.list;
-    if (!playlist) throw new ValidationError('playlist, url, or list is required');
-
-    // Worst-case credit pre-flight: every item could need a fresh fetch.
-    // We don't know the actual count until the list expansion returns.
-    await preflightBrowseCredit(req.user!.id, parsed.data.limit);
-    const listing = await listPlaylistVideos({
-      playlist,
-      limit: parsed.data.limit,
-    });
-
-    const bulk = await runBulkTranscripts({
-      userId: req.user!.id,
-      videos: listing.items,
-      format: parsed.data.format,
-      language: parsed.data.language,
-      nativeOnly: parsed.data.native_only,
-      translateTo: parsed.data.translate_to,
-    });
-
-    void logBrowseRequest(
-      req.user!.id,
-      req.apiKeyId ?? null,
-      '/v1/playlist/transcripts',
-      bulk.credits_used,
-      {startedAt, format: parsed.data.format},
-    );
-    res.json({
-      playlist_id: listing.playlist_id,
-      items: bulk.items,
-      total: bulk.total,
-      succeeded: bulk.succeeded,
-      failed: bulk.failed,
-      credits_used: bulk.credits_used,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-const ChannelTranscriptsSchema = z.object({
-  channel: z.string().min(1),
-  mode: z.enum(['latest', 'videos', 'search']).default('latest'),
-  q: z.string().min(1).optional(),
-  query: z.string().min(1).optional(),
-  limit: BulkLimitSchema,
-  format: FormatSchema,
-  language: z.string().min(2).max(10).optional(),
-  native_only: NativeOnlySchema,
-  translate_to: z.string().min(2).max(10).optional(),
-});
-
-youtubeBrowseRouter.get('/channel/transcripts', apiKeyAuth, rateLimit, async (req, res, next) => {
-  const startedAt = Date.now();
-  try {
-    const parsed = ChannelTranscriptsSchema.safeParse(req.query);
-    if (!parsed.success) {
-      throw new ValidationError('Invalid query parameters', {
-        issues: parsed.error.flatten().fieldErrors,
-      });
-    }
-    const query = parsed.data.q ?? parsed.data.query;
-    if (parsed.data.mode === 'search' && !query) {
-      throw new ValidationError('q is required when mode=search');
-    }
-
-    await preflightBrowseCredit(req.user!.id, parsed.data.limit);
-    const listing = await listChannelVideos({
-      channel: parsed.data.channel,
-      // `latest` and `videos` map to the same service call; mode is only
-      // meaningful for the audit endpoint name. `search` adds the query.
-      query: parsed.data.mode === 'search' ? query : undefined,
-      limit: parsed.data.limit,
-    });
-
-    const bulk = await runBulkTranscripts({
-      userId: req.user!.id,
-      videos: listing.items,
-      format: parsed.data.format,
-      language: parsed.data.language,
-      nativeOnly: parsed.data.native_only,
-      translateTo: parsed.data.translate_to,
-    });
-
-    void logBrowseRequest(
-      req.user!.id,
-      req.apiKeyId ?? null,
-      '/v1/channel/transcripts',
-      bulk.credits_used,
-      {startedAt, format: parsed.data.format},
-    );
-    res.json({
-      channel: parsed.data.channel,
-      mode: parsed.data.mode,
-      ...(parsed.data.mode === 'search' ? { query } : {}),
-      items: bulk.items,
-      total: bulk.total,
-      succeeded: bulk.succeeded,
-      failed: bulk.failed,
-      credits_used: bulk.credits_used,
-    });
   } catch (err) {
     next(err);
   }
