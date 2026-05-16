@@ -123,12 +123,15 @@ export function PlaygroundClient() {
 	// the button visibly reflects what the server would accept, instead of
 	// letting the user click and seeing a toast.error round-trip.
 	const noKeySelected = showManual ? !manualKey.trim() : !selectedKeyId;
-	const submitDisabled = submitting || noKeySelected;
+	const noUsableKey = !selectedPlaintext;
+	const submitDisabled = submitting || noKeySelected || noUsableKey;
 	const submitDisabledReason = noKeySelected
 		? showManual
 			? 'Paste an API key to enable'
 			: 'Select an API key to enable'
-		: undefined;
+		: noUsableKey
+			? 'Select an API key with a stored plaintext value to use the public API.'
+			: undefined;
 
 	// The cURL we display always shows the public-API form (POST /v1/transcript).
 	// The transcript options (format/language/native_only/translate_to) are
@@ -206,8 +209,12 @@ export function PlaygroundClient() {
 	);
 
 	const handleCopyPreview = useCallback(async () => {
-		await navigator.clipboard.writeText(curlPreview);
-		toast.success('Copied');
+		try {
+			await navigator.clipboard.writeText(curlPreview);
+			toast.success('Copied');
+		} catch {
+			toast.error('Copy failed');
+		}
 	}, [curlPreview]);
 
 	return (

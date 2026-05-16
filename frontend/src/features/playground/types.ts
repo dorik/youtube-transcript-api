@@ -15,12 +15,3 @@ export interface BulkResultEntry {
   data?: TranscriptResponse;
   error?: string;
 }
-
-/** Which credential path the next request will use. */
-export type AuthMode = 'bearer' | 'session';
-
-/** Tab selector for the request form's input mode. */
-export type RequestTab = 'videos' | 'playlist' | 'channel';
-
-/** Sub-mode within the channel tab. */
-export type ChannelMode = 'latest' | 'videos' | 'search';
