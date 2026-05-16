@@ -3,7 +3,7 @@ import { OutputFormat } from './formatters';
 import { TranscriptResponse } from './transcriptService';
 import { extractVideoId } from '../utils/youtubeUrl';
 import { getCreditState } from './creditService';
-import { PaymentRequiredError, ApiError } from '../utils/errors';
+import { PaymentRequiredError, ApiError, ConflictError } from '../utils/errors';
 import {
   enqueueTranscriptJob,
   removeTranscriptJob,
@@ -205,13 +205,32 @@ export async function enqueueSingleRequest(
   );
   const row = rows[0];
 
-  const jobId = await enqueueTranscriptJob(row.id);
-  await pool.query(
-    `UPDATE transcript_requests SET bullmq_job_id = $1 WHERE id = $2`,
-    [jobId, row.id],
-  );
-  row.bullmq_job_id = jobId;
-  return row;
+  // A Redis enqueue cannot be rolled back inside the Postgres INSERT above.
+  // If enqueue (or the job-id write-back) fails, mark the row `failed` so it
+  // does not sit `queued` forever with no BullMQ job behind it.
+  try {
+    const jobId = await enqueueTranscriptJob(row.id);
+    await pool.query(
+      `UPDATE transcript_requests SET bullmq_job_id = $1 WHERE id = $2`,
+      [jobId, row.id],
+    );
+    row.bullmq_job_id = jobId;
+    return row;
+  } catch (err) {
+    await pool
+      .query(
+        `UPDATE transcript_requests
+         SET status = 'failed', error_code = 'ENQUEUE_FAILED',
+             error_message = $2, completed_at = NOW()
+         WHERE id = $1`,
+        [
+          row.id,
+          err instanceof Error ? err.message.slice(0, 500) : 'enqueue failed',
+        ],
+      )
+      .catch(() => undefined);
+    throw err;
+  }
 }
 
 /**
@@ -225,19 +244,26 @@ export async function cancelRequest(
   const row = await getUserRequest(id, userId);
   if (!row) return null;
   if (row.status !== 'queued') {
-    throw new ApiError(
-      409,
-      'NOT_CANCELABLE',
-      'conflict',
+    throw new ConflictError(
       `A request that is ${row.status} cannot be canceled.`,
+      'NOT_CANCELABLE',
     );
   }
   if (row.bullmq_job_id) await removeTranscriptJob(row.bullmq_job_id);
+  // Conditional on the row still being `queued` — closes the race where the
+  // worker promotes it to `processing` between the read above and this
+  // UPDATE. Zero rows matched ⇒ the worker won the race.
   const { rows } = await pool.query<TranscriptRequestRow>(
     `UPDATE transcript_requests
      SET status = 'canceled', completed_at = NOW()
-     WHERE id = $1 RETURNING ${ROW_COLUMNS}`,
+     WHERE id = $1 AND status = 'queued' RETURNING ${ROW_COLUMNS}`,
     [id],
   );
-  return rows[0] ?? null;
+  if (!rows[0]) {
+    throw new ConflictError(
+      'This request started processing before it could be canceled.',
+      'NOT_CANCELABLE',
+    );
+  }
+  return rows[0];
 }
