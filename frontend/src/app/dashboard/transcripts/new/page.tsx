@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,32 +11,87 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
 import { extractVideoId } from '@/lib/youtube-url';
+import { getApiErrorMessage } from '@/lib/apiError';
+import {
+  useCreateBatchMutation,
+  useCreateTranscriptMutation,
+} from '@/features/transcripts';
+
+/** True for a playlist or channel URL — routed to the bulk endpoint. */
+function isBulkUrl(input: string): boolean {
+  return (
+    /[?&]list=/.test(input) ||
+    /youtube\.com\/(@|channel\/|c\/|user\/)/.test(input)
+  );
+}
 
 /**
- * Form page that takes a YouTube URL plus optional source language and
- * translation target, then routes to the path-based viewer
- * /dashboard/transcripts/[videoId]?language=&translate_to=.
+ * Submit a transcript request to the async queue. Submitting does not block
+ * or navigate away — the field clears so the user can immediately queue the
+ * next URL. Playlist/channel URLs are sent to the bulk endpoint.
  */
 export default function NewTranscriptPage() {
-  const router = useRouter();
   const [url, setUrl] = useState('');
   const [language, setLanguage] = useState('');
   const [translateTo, setTranslateTo] = useState('');
 
+  const createMutation = useCreateTranscriptMutation();
+  const batchMutation = useCreateBatchMutation();
+  const submitting = createMutation.isPending || batchMutation.isPending;
+
+  function sharedConfig() {
+    return {
+      language: language.trim() || undefined,
+      translate_to:
+        translateTo.trim() && translateTo !== 'none'
+          ? translateTo.trim()
+          : undefined,
+    };
+  }
+
   function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const videoId = extractVideoId(url);
-    if (!videoId) {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+
+    if (isBulkUrl(trimmed)) {
+      const isPlaylist = /[?&]list=/.test(trimmed);
+      batchMutation.mutate(
+        {
+          ...(isPlaylist ? { playlist: trimmed } : { channel: trimmed }),
+          ...sharedConfig(),
+        },
+        {
+          onSuccess: (res) => {
+            toast.success(
+              `Queued ${res.requests.length} videos from the ${
+                isPlaylist ? 'playlist' : 'channel'
+              }.`,
+            );
+            setUrl('');
+          },
+          onError: (err) =>
+            toast.error(getApiErrorMessage(err, 'Could not queue the batch')),
+        },
+      );
+      return;
+    }
+
+    if (!extractVideoId(trimmed)) {
       toast.error("That doesn't look like a YouTube URL or video id.");
       return;
     }
-    const next = new URLSearchParams();
-    if (language.trim()) next.set('language', language.trim());
-    if (translateTo.trim() && translateTo !== 'none') {
-      next.set('translate_to', translateTo.trim());
-    }
-    const qs = next.toString();
-    router.push(`/dashboard/transcripts/${videoId}${qs ? `?${qs}` : ''}`);
+    createMutation.mutate(
+      { url: trimmed, ...sharedConfig() },
+      {
+        onSuccess: () => {
+          toast.success('Added to the queue.');
+          setUrl('');
+        },
+        onError: (err) =>
+          toast.error(getApiErrorMessage(err, 'Could not queue the request')),
+      },
+    );
   }
 
   return (
@@ -46,7 +100,7 @@ export default function NewTranscriptPage() {
         <Button asChild variant="ghost" size="sm" className="shrink-0">
           <Link href="/dashboard/transcripts">
             <ArrowLeft className="h-4 w-4 mr-1.5" />
-            Back to history
+            Back to transcripts
           </Link>
         </Button>
       </div>
@@ -54,19 +108,20 @@ export default function NewTranscriptPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">New transcript</h1>
         <p className="text-muted-foreground text-sm">
-          Paste a YouTube URL to fetch the transcript. Costs 1 credit per
-          native-caption video, plus 1 extra if translating.
+          Paste a YouTube video, playlist, or channel URL. Requests run in the
+          background — submit as many as you like; track them on the
+          transcripts page.
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Load a transcript</CardTitle>
+          <CardTitle className="text-base">Queue a transcript</CardTitle>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit} className="space-y-3">
             <div className="space-y-2">
-              <Label htmlFor="url">YouTube URL or video ID</Label>
+              <Label htmlFor="url">YouTube video, playlist, or channel URL</Label>
               <Input
                 id="url"
                 type="text"
@@ -99,11 +154,13 @@ export default function NewTranscriptPage() {
                   searchPlaceholder="Search languages…"
                 />
               </div>
-              <Button type="submit">Load</Button>
+              <Button type="submit" disabled={submitting}>
+                {submitting ? 'Queuing…' : 'Add to queue'}
+              </Button>
             </div>
           </form>
           <p className="text-xs text-muted-foreground mt-3">
-            Uses your dashboard session and your account&apos;s credit balance.
+            Costs 1 credit per fresh transcript (cached videos are free).
             Translation costs <strong>+1 credit</strong> per video.
           </p>
         </CardContent>
