@@ -77,19 +77,32 @@ meTranscriptsRouter.get('/', async (req, res, next) => {
   }
 });
 
-const BulkSchema = z.object({
-  // Exactly one of these identifies the batch source.
-  playlist: z.string().min(1).optional(),
-  channel: z.string().min(1).optional(),
-  urls: z.array(z.string().min(1)).min(1).max(svc.BATCH_VIDEO_CAP).optional(),
-  format: z
-    .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
-    .default('json'),
-  language: z.string().min(2).max(10).optional(),
-  native_only: z.boolean().optional(),
-  translate_to: z.string().min(2).max(10).optional(),
-  limit: z.coerce.number().int().min(1).max(svc.BATCH_VIDEO_CAP).default(50),
-});
+const BulkSchema = z
+  .object({
+    // Exactly one of these identifies the batch source.
+    playlist: z.string().min(1).optional(),
+    channel: z.string().min(1).optional(),
+    urls: z.array(z.string().min(1)).min(1).max(svc.BATCH_VIDEO_CAP).optional(),
+    format: z
+      .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
+      .default('json'),
+    language: z.string().min(2).max(10).optional(),
+    native_only: z.boolean().optional(),
+    translate_to: z.string().min(2).max(10).optional(),
+    limit: z.coerce.number().int().min(1).max(svc.BATCH_VIDEO_CAP).default(50),
+  })
+  .superRefine((val, ctx) => {
+    const sourceCount =
+      (val.playlist ? 1 : 0) +
+      (val.channel ? 1 : 0) +
+      (val.urls && val.urls.length > 0 ? 1 : 0);
+    if (sourceCount !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide exactly one of: playlist, channel, urls',
+      });
+    }
+  });
 
 meTranscriptsRouter.post('/bulk', async (req, res, next) => {
   try {
@@ -99,12 +112,12 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
         issues: parsed.error.flatten().fieldErrors,
       });
     }
-    const p = parsed.data;
+    const data = parsed.data;
     const config = {
-      format: p.format,
-      language: p.language,
-      native_only: p.native_only,
-      translate_to: p.translate_to,
+      format: data.format,
+      language: data.language,
+      native_only: data.native_only,
+      translate_to: data.translate_to,
     };
 
     let kind: 'playlist' | 'channel' | 'videos';
@@ -112,12 +125,13 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
     let label: string | null = null;
     let videos: svc.BatchVideoInput[];
 
-    if (p.playlist) {
+    if (data.playlist) {
       kind = 'playlist';
-      sourceUrl = p.playlist;
+      sourceUrl = data.playlist;
+      label = data.playlist;
       const listing = await listPlaylistVideos({
-        playlist: p.playlist,
-        limit: p.limit,
+        playlist: data.playlist,
+        limit: data.limit,
       });
       videos = listing.items.map((v) => ({
         url: v.url,
@@ -126,13 +140,13 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
         channel: v.channel,
         thumbnail_url: v.thumbnail_url,
       }));
-    } else if (p.channel) {
+    } else if (data.channel) {
       kind = 'channel';
-      sourceUrl = p.channel;
-      label = p.channel;
+      sourceUrl = data.channel;
+      label = data.channel;
       const listing = await listChannelVideos({
-        channel: p.channel,
-        limit: p.limit,
+        channel: data.channel,
+        limit: data.limit,
       });
       videos = listing.items.map((v) => ({
         url: v.url,
@@ -141,11 +155,19 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
         channel: v.channel,
         thumbnail_url: v.thumbnail_url,
       }));
-    } else if (p.urls) {
+    } else if (data.urls) {
       kind = 'videos';
-      videos = p.urls.map((url) => ({ url, video_id: extractVideoId(url) }));
+      videos = data.urls.map((url, index) => {
+        try {
+          return { url, video_id: extractVideoId(url) };
+        } catch {
+          throw new ValidationError(
+            `Invalid URL at index ${index}: ${url}`,
+          );
+        }
+      });
     } else {
-      throw new ValidationError('Provide one of: playlist, channel, urls');
+      throw new ValidationError('Provide exactly one of: playlist, channel, urls');
     }
 
     const result = await svc.enqueueBatch({
