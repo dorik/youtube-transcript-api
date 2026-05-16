@@ -8,7 +8,6 @@ import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import { apiKeysRouter } from './routes/apiKeys';
 import { transcriptRouter } from './routes/transcript';
-import { meTranscriptRouter } from './routes/meTranscript';
 import { meTranscriptsRouter } from './routes/meTranscripts';
 import { billingRouter } from './routes/billing';
 import { webhooksRouter } from './routes/webhooks';
@@ -93,7 +92,6 @@ export function createApp(): Application {
   app.use('/auth', authRouter);
   app.use('/me/api-keys', apiKeysRouter);
   app.use('/me/usage', usageRouter);
-  app.use('/me/transcript', meTranscriptRouter);
   app.use('/me/transcripts', meTranscriptsRouter);
   app.use('/v1', transcriptRouter);
   app.use('/v1', youtubeBrowseRouter);
