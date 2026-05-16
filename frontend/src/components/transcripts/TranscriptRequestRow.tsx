@@ -1,6 +1,6 @@
 'use client';
 
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import Link from 'next/link';
 import { X } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -26,6 +26,15 @@ export const TranscriptRequestRow = memo(function TranscriptRequestRow({
   onCancel,
   canceling,
 }: Props) {
+  const handleCancel = useCallback(
+    (e: React.MouseEvent) => {
+      if (!onCancel) return;
+      e.preventDefault();
+      onCancel(request.id);
+    },
+    [onCancel, request.id],
+  );
+
   const clickable = request.status === 'completed';
   const inner = (
     <Card
@@ -103,10 +112,8 @@ export const TranscriptRequestRow = memo(function TranscriptRequestRow({
             size="sm"
             className="shrink-0"
             disabled={canceling}
-            onClick={(e) => {
-              e.preventDefault();
-              onCancel(request.id);
-            }}
+            aria-label="Cancel request"
+            onClick={handleCancel}
           >
             <X className="h-4 w-4" />
           </Button>
