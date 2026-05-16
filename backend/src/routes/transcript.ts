@@ -5,6 +5,7 @@ import { rateLimit } from '../middleware/rateLimit';
 import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
+import { expandBulkSource } from '../services/bulkExpansion';
 
 /**
  * `/v1/transcript` — public, API-key-authed transcript queue.
@@ -65,6 +66,91 @@ transcriptRouter.get(
         throw new NotFoundError('Transcript request not found');
       }
       res.json(row);
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+const BulkSchema = z
+  .object({
+    playlist: z.string().min(1).optional(),
+    channel: z.string().min(1).optional(),
+    channelMode: z.enum(['videos', 'latest', 'search']).default('videos'),
+    channelQuery: z.string().min(1).optional(),
+    urls: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(svc.BATCH_VIDEO_CAP)
+      .optional(),
+    format: z
+      .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
+      .default('json'),
+    language: z.string().min(2).max(10).optional(),
+    native_only: z.boolean().optional(),
+    translate_to: z.string().min(2).max(10).optional(),
+    limit: z.coerce.number().int().min(1).max(svc.BATCH_VIDEO_CAP).default(50),
+  })
+  .superRefine((val, ctx) => {
+    const sourceCount =
+      (val.playlist ? 1 : 0) +
+      (val.channel ? 1 : 0) +
+      (val.urls && val.urls.length > 0 ? 1 : 0);
+    if (sourceCount !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide exactly one of: playlist, channel, urls',
+      });
+    }
+    if (val.channel && val.channelMode === 'search' && !val.channelQuery?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'channelQuery is required when channelMode is "search"',
+      });
+    }
+  });
+
+/**
+ * POST /v1/transcripts/bulk — public, API-key-authed bulk enqueue. Expands a
+ * playlist/channel/URL-list, queues one job per video, and returns 202 with
+ * the batch and its queued entries. Async-only: transcripts are polled via
+ * GET /v1/transcripts/batches/:id.
+ */
+transcriptRouter.post(
+  '/transcripts/bulk',
+  apiKeyAuth,
+  rateLimit,
+  async (req, res, next) => {
+    try {
+      const parsed = BulkSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new ValidationError('Invalid request body', {
+          issues: parsed.error.flatten().fieldErrors,
+        });
+      }
+      const data = parsed.data;
+      const { kind, sourceUrl, label, videos } = await expandBulkSource({
+        playlist: data.playlist,
+        channel: data.channel,
+        channelMode: data.channelMode,
+        channelQuery: data.channelQuery,
+        urls: data.urls,
+        limit: data.limit,
+      });
+      const result = await svc.enqueueBatch({
+        userId: req.user!.id,
+        kind,
+        sourceUrl,
+        label,
+        videos,
+        config: {
+          format: data.format,
+          language: data.language,
+          native_only: data.native_only,
+          translate_to: data.translate_to,
+        },
+      });
+      res.status(202).json(result);
     } catch (err) {
       next(err);
     }
