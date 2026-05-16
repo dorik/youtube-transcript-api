@@ -4,7 +4,7 @@
 
 **Goal:** Rework the dashboard so transcript requests are submitted to the async backend queue — the user submits and immediately moves on, sees one unified list of queued/processing/completed/failed entries with live status, and opens a completed transcript from its stored result.
 
-**Architecture:** The `features/transcripts` module is rewritten against the new `/me/transcripts` async endpoints. A single `EventSource` (SSE) connection invalidates React Query caches on status changes. The transcripts list renders standalone request rows and collapsible batch groups. The viewer is keyed by request id and renders the request's stored `result`.
+**Architecture:** The `features/transcripts` module is rewritten against the new `/me/transcripts` async endpoints. React Query polls the list, detail, and batch endpoints on an interval while any row is still `queued`/`processing`, so status changes surface without a manual refresh. The transcripts list renders standalone request rows and collapsible batch groups. The viewer is keyed by request id and renders the request's stored `result`.
 
 **Tech Stack:** Next.js 14 (App Router), React 18, TanStack Query v5, axios (`createApi` adapter), shadcn/ui, Tailwind, sonner.
 
@@ -26,14 +26,13 @@ From the backend plan — the shapes the frontend types must mirror:
 - **`GET /me/transcripts/:id`** → a `TranscriptRequest`.
 - **`DELETE /me/transcripts/:id`** → the canceled `TranscriptRequest`.
 - **`GET /me/transcripts/batches/:id`** → `{ batch, progress, requests }` where `progress` is `{ queued, processing, completed, failed, canceled }`.
-- **`GET /me/transcripts/stream`** → SSE; each `data:` line is `{ userId, requestId, batchId, status }`.
+- **`DELETE /me/transcripts/batches/:id`** → cancels every still-`queued` child; returns `{ batch, canceled, progress }`.
 
 ---
 
 ## File Structure
 
 **Create:**
-- `frontend/src/features/transcripts/useTranscriptStream.ts` — SSE hook.
 - `frontend/src/components/transcripts/RequestStatusBadge.tsx` — status pill.
 - `frontend/src/components/transcripts/TranscriptRequestRow.tsx` — one list row.
 - `frontend/src/components/transcripts/BatchGroup.tsx` — collapsible batch header + child rows.
@@ -47,11 +46,11 @@ From the backend plan — the shapes the frontend types must mirror:
 - `frontend/src/features/transcripts/index.ts` — re-exports.
 - `frontend/src/app/dashboard/transcripts/page.tsx` — list rewrite.
 - `frontend/src/app/dashboard/transcripts/new/page.tsx` — non-blocking submit + bulk.
-- `frontend/src/features/playground/PlaygroundClient.tsx` — async rework (Task 10).
+- `frontend/src/features/playground/PlaygroundClient.tsx` — async rework (Task 9).
 
 **Move / replace:**
 - `frontend/src/app/dashboard/transcripts/[videoId]/page.tsx` → `frontend/src/app/dashboard/transcripts/[id]/page.tsx` — viewer keyed by request id.
-- `frontend/src/components/transcripts-history/HistoryRow.tsx` — superseded by `TranscriptRequestRow`; deleted in Task 5.
+- `frontend/src/components/transcripts-history/HistoryRow.tsx` — superseded by `TranscriptRequestRow`; deleted in Task 4.
 
 ---
 
@@ -137,14 +136,6 @@ export interface BatchDetailResponse {
 export interface BatchCreateResponse {
   batch: TranscriptBatch;
   requests: TranscriptRequest[];
-}
-
-/** SSE payload from GET /me/transcripts/stream. */
-export interface TranscriptStreamEvent {
-  userId: string;
-  requestId: string;
-  batchId: string | null;
-  status: RequestStatus;
 }
 ```
 
@@ -370,10 +361,10 @@ export function useTranscriptRequestsQuery(input: ListRequestsInput) {
   return useQuery<RequestListResponse, Error>({
     queryKey: transcriptsQueryKeys.list(input),
     queryFn: () => listTranscriptRequests(input),
-    // SSE is the primary update channel; this poll is a fallback for when
-    // the stream is down. Only polls while something is still active.
+    // Poll while any row is still queued/processing so the list advances
+    // through queued → processing → done without a manual refresh.
     refetchInterval: (query) =>
-      query.state.data?.items.some((r) => isActive(r.status)) ? 8000 : false,
+      query.state.data?.items.some((r) => isActive(r.status)) ? 4000 : false,
   });
 }
 
@@ -447,11 +438,8 @@ export {
   useTranscriptRequestQuery,
   useTranscriptRequestsQuery,
 } from './transcripts.queries';
-export { useTranscriptStream } from './useTranscriptStream';
 export { transcriptsQueryKeys } from './queryKeys';
 ```
-
-(`useTranscriptStream` is created in Task 4 — the export line will resolve once that file exists.)
 
 - [ ] **Step 4: Commit**
 
@@ -462,76 +450,7 @@ git commit -m "feat(transcripts): async queue query hooks"
 
 ---
 
-## Task 4: SSE stream hook
-
-**Files:**
-- Create: `frontend/src/features/transcripts/useTranscriptStream.ts`
-
-- [ ] **Step 1: Write the hook**
-
-Create `frontend/src/features/transcripts/useTranscriptStream.ts`:
-
-```ts
-'use client';
-
-import { useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { API_BASE_URL } from '@/lib/api';
-import type { TranscriptStreamEvent } from '@/lib/api';
-import { transcriptsQueryKeys } from './queryKeys';
-
-/**
- * Opens one SSE connection to GET /me/transcripts/stream while mounted. Each
- * status change invalidates the affected React Query caches so the list,
- * the open request, and any batch re-fetch. EventSource auto-reconnects on
- * drop; the query hooks' `refetchInterval` covers any gap.
- */
-export function useTranscriptStream(): void {
-  const qc = useQueryClient();
-
-  useEffect(() => {
-    const es = new EventSource(`${API_BASE_URL}/me/transcripts/stream`, {
-      withCredentials: true,
-    });
-
-    es.onmessage = (e) => {
-      let evt: TranscriptStreamEvent;
-      try {
-        evt = JSON.parse(e.data) as TranscriptStreamEvent;
-      } catch {
-        return;
-      }
-      void qc.invalidateQueries({ queryKey: transcriptsQueryKeys.all });
-      void qc.invalidateQueries({
-        queryKey: transcriptsQueryKeys.detail(evt.requestId),
-      });
-      if (evt.batchId) {
-        void qc.invalidateQueries({
-          queryKey: transcriptsQueryKeys.batch(evt.batchId),
-        });
-      }
-    };
-
-    return () => es.close();
-  }, [qc]);
-}
-```
-
-- [ ] **Step 2: Verify it typechecks**
-
-Run from `frontend/`: `npm run type-check`
-Expected: no errors in `useTranscriptStream.ts` or `index.ts`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add frontend/src/features/transcripts/useTranscriptStream.ts
-git commit -m "feat(transcripts): SSE hook invalidates queries on status change"
-```
-
----
-
-## Task 5: Status badge and request row components
+## Task 4: Status badge and request row components
 
 **Files:**
 - Create: `frontend/src/components/transcripts/RequestStatusBadge.tsx`
@@ -712,7 +631,7 @@ git rm frontend/src/components/transcripts-history/HistoryRow.tsx
 - [ ] **Step 4: Verify it typechecks**
 
 Run from `frontend/`: `npm run type-check`
-Expected: errors now only in `app/dashboard/transcripts/page.tsx` (still imports the deleted `HistoryRow`) — fixed in Task 7. Confirm `formatRelativeTime` and `formatTimecode` exist in `frontend/src/lib/format.ts`; they are used by the old `HistoryRow` so they do.
+Expected: errors now only in `app/dashboard/transcripts/page.tsx` (still imports the deleted `HistoryRow`) — fixed in Task 6. Confirm `formatRelativeTime` and `formatTimecode` exist in `frontend/src/lib/format.ts`; they are used by the old `HistoryRow` so they do.
 
 - [ ] **Step 5: Commit**
 
@@ -723,7 +642,7 @@ git commit -m "feat(transcripts): status badge and request row components"
 
 ---
 
-## Task 6: Batch group component
+## Task 5: Batch group component
 
 **Files:**
 - Create: `frontend/src/components/transcripts/BatchGroup.tsx`
@@ -826,7 +745,7 @@ git commit -m "feat(transcripts): collapsible batch group component"
 
 ---
 
-## Task 7: Transcripts list page
+## Task 6: Transcripts list page
 
 **Files:**
 - Modify: `frontend/src/app/dashboard/transcripts/page.tsx`
@@ -852,7 +771,6 @@ import { BatchGroup } from '@/components/transcripts/BatchGroup';
 import {
   useCancelTranscriptMutation,
   useTranscriptRequestsQuery,
-  useTranscriptStream,
 } from '@/features/transcripts';
 import type { TranscriptBatch, TranscriptRequest } from '@/lib/api';
 
@@ -860,12 +778,12 @@ const PAGE_SIZE = DEFAULT_PAGE_SIZE;
 
 /**
  * Unified transcripts list — standalone request rows plus collapsible batch
- * groups, newest first. Live-updated over SSE; a poll fallback covers stream
- * drops.
+ * groups, newest first. React Query polls while any row is queued/processing
+ * so statuses advance without a manual refresh; the Refresh button forces an
+ * immediate re-fetch.
  */
 export default function TranscriptsPage() {
   const [offset, setOffset] = useState(0);
-  useTranscriptStream();
 
   const listQuery = useTranscriptRequestsQuery({ limit: PAGE_SIZE, offset });
   const cancelMutation = useCancelTranscriptMutation();
@@ -1041,7 +959,7 @@ Expected: no errors in `transcripts/page.tsx`.
 
 - [ ] **Step 3: Manual verification**
 
-With the backend running and logged in, open `/dashboard/transcripts`. Expected: the list renders (empty state if no requests). Leave it open during Task 8's manual check to confirm a new request appears live.
+With the backend running and logged in, open `/dashboard/transcripts`. Expected: the list renders (empty state if no requests). Leave it open during Task 7's manual check to confirm a new request appears via polling.
 
 - [ ] **Step 4: Commit**
 
@@ -1052,7 +970,7 @@ git commit -m "feat(transcripts): unified live queue list page"
 
 ---
 
-## Task 8: New transcript form — non-blocking submit + bulk
+## Task 7: New transcript form — non-blocking submit + bulk
 
 **Files:**
 - Modify: `frontend/src/app/dashboard/transcripts/new/page.tsx`
@@ -1241,7 +1159,7 @@ Expected: no errors.
 
 - [ ] **Step 3: Manual verification**
 
-With `/dashboard/transcripts` open in another tab: on `/dashboard/transcripts/new`, paste a video URL and submit. Expected: toast "Added to the queue", the input clears, and within ~1–2 s a `queued` row appears in the other tab without a manual refresh (SSE). Submit a second URL immediately — both queue independently. Paste a playlist URL — a batch group appears.
+With `/dashboard/transcripts` open in another tab: on `/dashboard/transcripts/new`, paste a video URL and submit. Expected: toast "Added to the queue", the input clears, and within a few seconds a `queued` row appears in the other tab as React Query polls — no manual refresh needed. Submit a second URL immediately — both queue independently. Paste a playlist URL — a batch group appears.
 
 - [ ] **Step 4: Commit**
 
@@ -1252,7 +1170,7 @@ git commit -m "feat(transcripts): non-blocking submit form with playlist/channel
 
 ---
 
-## Task 9: Viewer page — keyed by request id
+## Task 8: Viewer page — keyed by request id
 
 **Files:**
 - Create: `frontend/src/app/dashboard/transcripts/[id]/page.tsx`
@@ -1277,7 +1195,6 @@ import { TranscriptViewer } from '@/features/transcript-viewer';
 import {
   useCreateTranscriptMutation,
   useTranscriptRequestQuery,
-  useTranscriptStream,
 } from '@/features/transcripts';
 
 /**
@@ -1291,7 +1208,6 @@ export default function TranscriptViewPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
 
-  useTranscriptStream();
   const requestQuery = useTranscriptRequestQuery(id, !!id);
   const createMutation = useCreateTranscriptMutation();
 
@@ -1449,7 +1365,7 @@ git commit -m "feat(transcripts): request-id viewer with live status and retry"
 
 ---
 
-## Task 10: Playground — async rework
+## Task 9: Playground — async rework
 
 **Files:**
 - Modify: `frontend/src/features/playground/PlaygroundClient.tsx`
@@ -1511,7 +1427,7 @@ git commit -m "feat(playground): async enqueue-and-poll against /v1/transcript"
 
 ---
 
-## Task 11: Clean up the dead synchronous API surface
+## Task 10: Clean up the dead synchronous API surface
 
 **Files:**
 - Modify: `frontend/src/lib/api.ts`
@@ -1539,7 +1455,7 @@ git commit -m "refactor(transcripts): drop dead synchronous transcript API surfa
 
 ---
 
-## Task 12: End-to-end verification
+## Task 11: End-to-end verification
 
 No code changes — verify the whole frontend against the running backend.
 
@@ -1568,9 +1484,9 @@ Submit a URL that will fail (e.g. a video with no captions on a free plan). Expe
 
 Submit a small playlist URL. Expected: a batch group appears; expanding it lists child rows with derived progress that converges to "done".
 
-- [ ] **Step 7: SSE resilience**
+- [ ] **Step 7: Polling resilience**
 
-With `/dashboard/transcripts` open, stop and restart the backend. Expected: the page keeps working — the poll fallback refreshes active rows, and SSE reconnects once the backend is back.
+With `/dashboard/transcripts` open, stop and restart the backend. Expected: the page keeps working — a failed poll surfaces gracefully and, once the backend is back, the next interval poll refreshes active rows automatically.
 
 - [ ] **Step 8: Final commit (if verification fixes were needed)**
 
@@ -1583,7 +1499,7 @@ git commit -m "test(transcripts): frontend end-to-end verification fixes"
 
 ## Self-Review Notes
 
-- **Spec coverage:** non-blocking submit (Task 8), unified list with status (Tasks 5, 7), batch grouping (Tasks 6, 7, 8), SSE live updates (Tasks 4, 7, 9), viewer from stored `result` (Task 9), cancel queued-only (Tasks 5, 7), retry failed (Task 9), API consumer flow — playground loops `POST /v1/transcript` (Task 10). All user-facing spec items map to a task.
-- **Type consistency:** `TranscriptRequest` / `TranscriptBatch` / `BatchProgress` / `RequestStatus` are defined once in `lib/api.ts` (Task 1) and imported everywhere; hook names (`useTranscriptRequestsQuery`, `useTranscriptRequestQuery`, `useTranscriptBatchQuery`, `useCreateTranscriptMutation`, `useCreateBatchMutation`, `useCancelTranscriptMutation`, `useTranscriptStream`) match between `transcripts.queries.ts`, `index.ts`, and all page consumers.
+- **Spec coverage:** non-blocking submit (Task 7), unified list with status (Tasks 4, 6), batch grouping (Tasks 5, 6, 7), polling live updates (Tasks 3, 6, 8), viewer from stored `result` (Task 8), cancel queued-only (Tasks 4, 6), retry failed (Task 8), API consumer flow — playground loops `POST /v1/transcript` (Task 9). All user-facing spec items map to a task.
+- **Type consistency:** `TranscriptRequest` / `TranscriptBatch` / `BatchProgress` / `RequestStatus` are defined once in `lib/api.ts` (Task 1) and imported everywhere; hook names (`useTranscriptRequestsQuery`, `useTranscriptRequestQuery`, `useTranscriptBatchQuery`, `useCreateTranscriptMutation`, `useCreateBatchMutation`, `useCancelTranscriptMutation`) match between `transcripts.queries.ts`, `index.ts`, and all page consumers.
 - **No test framework added** — the frontend has none; verification is type-check + lint + build + manual, as stated up front.
 - **Known follow-ups (out of scope):** transcript-list search (the new list endpoint has no `q` param); the `features/youtube` browse module is left intact since the discovery endpoints still exist.
