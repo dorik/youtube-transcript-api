@@ -34,6 +34,7 @@ export function BatchGroup({ batch, onCancel, canceling }: Props) {
       <CardContent className="p-0">
         <button
           type="button"
+          aria-expanded={open}
           onClick={() => setOpen((v) => !v)}
           className="w-full flex items-center gap-2 p-3 sm:p-4 text-left hover:bg-muted/40"
         >
