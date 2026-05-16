@@ -4,11 +4,7 @@ import { sessionAuth } from '../middleware/sessionAuth';
 import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
-import {
-  listPlaylistVideos,
-  listChannelVideos,
-} from '../services/youtubeBrowseService';
-import { extractVideoId } from '../utils/youtubeUrl';
+import { expandBulkSource } from '../services/bulkExpansion';
 
 /**
  * `/me/transcripts` — cookie-authed async transcript queue for the dashboard.
@@ -114,70 +110,24 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
       });
     }
     const data = parsed.data;
-    const config = {
-      format: data.format,
-      language: data.language,
-      native_only: data.native_only,
-      translate_to: data.translate_to,
-    };
-
-    let kind: 'playlist' | 'channel' | 'videos';
-    let sourceUrl: string | null = null;
-    let label: string | null = null;
-    let videos: svc.BatchVideoInput[];
-
-    if (data.playlist) {
-      kind = 'playlist';
-      sourceUrl = data.playlist;
-      label = data.playlist;
-      const listing = await listPlaylistVideos({
-        playlist: data.playlist,
-        limit: data.limit,
-      });
-      videos = listing.items.map((v) => ({
-        url: v.url,
-        video_id: v.video_id,
-        title: v.title,
-        channel: v.channel,
-        thumbnail_url: v.thumbnail_url,
-      }));
-    } else if (data.channel) {
-      kind = 'channel';
-      sourceUrl = data.channel;
-      label = data.channel;
-      const listing = await listChannelVideos({
-        channel: data.channel,
-        limit: data.limit,
-      });
-      videos = listing.items.map((v) => ({
-        url: v.url,
-        video_id: v.video_id,
-        title: v.title,
-        channel: v.channel,
-        thumbnail_url: v.thumbnail_url,
-      }));
-    } else if (data.urls) {
-      kind = 'videos';
-      videos = data.urls.map((url, index) => {
-        try {
-          return { url, video_id: extractVideoId(url) };
-        } catch {
-          throw new ValidationError(
-            `Invalid URL at index ${index}: ${url}`,
-          );
-        }
-      });
-    } else {
-      throw new ValidationError('Provide exactly one of: playlist, channel, urls');
-    }
-
+    const { kind, sourceUrl, label, videos } = await expandBulkSource({
+      playlist: data.playlist,
+      channel: data.channel,
+      urls: data.urls,
+      limit: data.limit,
+    });
     const result = await svc.enqueueBatch({
       userId: req.user!.id,
       kind,
       sourceUrl,
       label,
       videos,
-      config,
+      config: {
+        format: data.format,
+        language: data.language,
+        native_only: data.native_only,
+        translate_to: data.translate_to,
+      },
     });
     res.status(202).json(result);
   } catch (err) {
