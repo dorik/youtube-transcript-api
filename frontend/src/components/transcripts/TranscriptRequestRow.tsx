@@ -4,9 +4,11 @@ import { memo, useCallback } from 'react';
 import Link from 'next/link';
 import { X } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RequestStatusBadge } from './RequestStatusBadge';
 import { formatRelativeTime, formatTimecode } from '@/lib/format';
+import { languageLabel } from '@/lib/languages';
 import type { TranscriptRequest } from '@/lib/api';
 
 interface Props {
@@ -36,6 +38,9 @@ export const TranscriptRequestRow = memo(function TranscriptRequestRow({
   );
 
   const clickable = request.status === 'completed';
+  // Two requests for the same video differ only by translation target; tag the
+  // row with that target so the list doesn't look like it has duplicates.
+  const translateTo = request.request.translate_to;
   const inner = (
     <Card
       className={
@@ -88,6 +93,15 @@ export const TranscriptRequestRow = memo(function TranscriptRequestRow({
           </p>
           <div className="flex items-center gap-1.5 flex-wrap pt-1">
             <RequestStatusBadge status={request.status} />
+            {translateTo && (
+              <Badge
+                variant="outline"
+                className="text-[10px]"
+                title={languageLabel(translateTo)}
+              >
+                {translateTo.toUpperCase()}
+              </Badge>
+            )}
             {request.status === 'failed' && request.error_message && (
               <span className="text-[11px] text-destructive line-clamp-1">
                 {request.error_message}
