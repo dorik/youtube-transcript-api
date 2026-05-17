@@ -83,7 +83,7 @@ const FAQ = [
   },
   {
     q: 'Is there an SLA?',
-    a: 'Pro and Business plans include a 99.5% uptime SLA. Status and incident history are publicly available.',
+    a: 'Pro and Business plans include a 99.5% uptime SLA.',
   },
   {
     q: 'Can I switch plans?',

@@ -6,60 +6,102 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
 const SAMPLES = {
-  curl: `curl 'https://api.youtubetranscripts.co/v1/transcript?url=https://youtu.be/dQw4w9WgXcQ&format=json' \\
+  curl: `# 1. Enqueue a transcript request
+curl -X POST 'https://yt-transcripts-api-v2.onrender.com/v1/transcript' \\
+  -H 'Authorization: Bearer yt_live_YOUR_KEY' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","format":"json"}'
+
+# Returns 202 with a queued request. Poll until status is "completed":
+curl 'https://yt-transcripts-api-v2.onrender.com/v1/transcript/REQUEST_ID' \\
   -H 'Authorization: Bearer yt_live_YOUR_KEY'`,
   node: `import axios from 'axios';
 
-const { data } = await axios.get(
-  'https://api.youtubetranscripts.co/v1/transcript',
-  {
-    params: { url: 'https://youtu.be/dQw4w9WgXcQ', format: 'json' },
-    headers: { Authorization: \`Bearer \${process.env.YT_API_KEY}\` },
-  },
-);
-console.log(data.transcript);`,
-  python: `import os
-import requests
+const api = axios.create({
+  baseURL: 'https://yt-transcripts-api-v2.onrender.com',
+  headers: { Authorization: \`Bearer \${process.env.YT_API_KEY}\` },
+});
 
-resp = requests.get(
-    "https://api.youtubetranscripts.co/v1/transcript",
-    params={"url": "https://youtu.be/dQw4w9WgXcQ", "format": "json"},
-    headers={"Authorization": f"Bearer {os.environ['YT_API_KEY']}"},
+// 1. Enqueue the request
+const { data: job } = await api.post('/v1/transcript', {
+  url: 'https://youtu.be/dQw4w9WgXcQ',
+  format: 'json',
+});
+
+// 2. Poll until the worker finishes
+let result = job;
+while (result.status === 'queued' || result.status === 'processing') {
+  await new Promise((r) => setTimeout(r, 1500));
+  ({ data: result } = await api.get(\`/v1/transcript/\${job.id}\`));
+}
+console.log(result.result.transcript);`,
+  python: `import os, time, requests
+
+API = "https://yt-transcripts-api-v2.onrender.com"
+headers = {"Authorization": f"Bearer {os.environ['YT_API_KEY']}"}
+
+# 1. Enqueue the request
+job = requests.post(
+    f"{API}/v1/transcript",
+    json={"url": "https://youtu.be/dQw4w9WgXcQ", "format": "json"},
+    headers=headers,
     timeout=15,
-)
-resp.raise_for_status()
-print(resp.json()["transcript"])`,
+).json()
+
+# 2. Poll until the worker finishes
+result = job
+while result["status"] in ("queued", "processing"):
+    time.sleep(1.5)
+    result = requests.get(
+        f"{API}/v1/transcript/{job['id']}", headers=headers, timeout=15
+    ).json()
+
+print(result["result"]["transcript"])`,
 };
 
 const RESPONSE_SAMPLE = `{
+  "id": "a1b2c3d4-5e6f-7890-abcd-ef1234567890",
+  "status": "completed",
+  "source": "api",
   "video_id": "dQw4w9WgXcQ",
-  "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
   "channel": "Rick Astley",
-  "duration": 212,
-  "language": "en",
-  "source": "native_captions",
-  "format": "json",
-  "transcript": "[♪♪♪] ♪ We're no strangers to love ♪ ♪ You know the rules and so do I ♪ ...",
-  "segments": [
-    { "start": 1.36,  "duration": 1.68, "text": "[♪♪♪]" },
-    { "start": 18.64, "duration": 3.24, "text": "♪ We're no strangers to love ♪" }
-  ],
   "credits_used": 1,
-  "credits_remaining": 99,
-  "cached": false,
-  "fetched_at": "2026-05-09T08:14:07.359Z"
+  "result": {
+    "video_id": "dQw4w9WgXcQ",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+    "channel": "Rick Astley",
+    "duration": 212,
+    "language": "en",
+    "original_language": "en",
+    "translated_to": null,
+    "source": "native_captions",
+    "format": "json",
+    "transcript": "[♪♪♪] ♪ We're no strangers to love ♪ ...",
+    "segments": [
+      { "start": 1.36, "duration": 1.68, "text": "[♪♪♪]" }
+    ],
+    "credits_used": 1,
+    "credits_remaining": 99,
+    "cached": false,
+    "fetched_at": "2026-05-09T08:14:07.359Z"
+  },
+  "created_at": "2026-05-09T08:14:05.001Z",
+  "completed_at": "2026-05-09T08:14:07.412Z"
 }`;
 
 const ERROR_CODES: Array<{ code: string; status: number; meaning: string }> = [
   { code: 'MISSING_API_KEY', status: 401, meaning: 'Authorization header is missing.' },
   { code: 'INVALID_API_KEY', status: 401, meaning: 'Bearer token is malformed, revoked, or unknown.' },
-  { code: 'INVALID_AUTH_SCHEME', status: 401, meaning: 'Header is present but not Bearer.' },
-  { code: 'VALIDATION_ERROR', status: 400, meaning: 'Query parameters failed schema validation.' },
+  { code: 'INVALID_AUTH_SCHEME', status: 401, meaning: 'Header is present but not the Bearer scheme.' },
+  { code: 'VALIDATION_ERROR', status: 400, meaning: 'Request body or query parameters failed schema validation.' },
+  { code: 'METHOD_NOT_ALLOWED', status: 405, meaning: 'The path exists but not for that HTTP method (see the Allow header).' },
   { code: 'INSUFFICIENT_CREDITS', status: 402, meaning: 'Account is out of credits for this billing cycle.' },
-  { code: 'NO_TRANSCRIPT', status: 404, meaning: 'Video has no captions and Whisper also failed.' },
+  { code: 'NO_TRANSCRIPT', status: 404, meaning: 'Video has no captions and the Whisper fallback also produced nothing.' },
   { code: 'VIDEO_NOT_FOUND', status: 404, meaning: 'Video does not exist or is private/removed.' },
   { code: 'RATE_LIMIT_EXCEEDED', status: 429, meaning: 'You exceeded your per-minute request limit.' },
+  { code: 'UPSTREAM_BLOCKED', status: 503, meaning: 'YouTube is temporarily blocking our servers. Retry shortly.' },
 ];
 
 export default function DocsPage() {
@@ -87,39 +129,53 @@ export default function DocsPage() {
           </p>
         </Section>
 
-        <Section id="get-transcript" title="GET /v1/transcript">
-          <p>Fetches the transcript for a YouTube video.</p>
+        <Section id="transcript" title="POST /v1/transcript">
+          <p>
+            Enqueues a transcript request for a YouTube video. The API is
+            asynchronous: this call returns immediately with a{' '}
+            <code>queued</code> request, and you poll{' '}
+            <code>GET /v1/transcript/:id</code> until its <code>status</code> is{' '}
+            <code>completed</code> (or <code>failed</code>). A request already
+            served from cache comes back <code>completed</code> right away.
+          </p>
 
-          <h3 className="text-base font-semibold mt-6 mb-2">Query parameters</h3>
+          <h3 className="text-base font-semibold mt-6 mb-2">Request body (JSON)</h3>
           <ParamTable
             rows={[
               { name: 'url', type: 'string', required: true, description: 'Any standard YouTube URL or a bare 11-character video id.' },
-              { name: 'format', type: 'enum', required: false, description: 'json (default), text, text-timestamps, srt, vtt' },
-              { name: 'language', type: 'string', required: false, description: 'ISO-639 language code (e.g. en, es, fr) or "auto".' },
+              { name: 'format', type: 'enum', required: false, description: 'json (default), text, text-timestamps, srt, vtt.' },
+              { name: 'language', type: 'string', required: false, description: 'Preferred caption language — an ISO-639 code (en, es, fr…) or "auto".' },
+              { name: 'native_only', type: 'boolean', required: false, description: 'When true, skip the Whisper fallback and fail if no native captions exist.' },
+              { name: 'translate_to', type: 'string', required: false, description: 'Target language for translation — an ISO-639 code, or "none" to skip.' },
             ]}
           />
 
-          <h3 className="text-base font-semibold mt-6 mb-2">Example request</h3>
+          <h3 className="text-base font-semibold mt-6 mb-2">Example</h3>
           <CodeTabs samples={SAMPLES} />
 
-          <h3 className="text-base font-semibold mt-6 mb-2">Example response</h3>
+          <h3 className="text-base font-semibold mt-6 mb-2">Example response (a completed request)</h3>
           <Code>{RESPONSE_SAMPLE}</Code>
+          <p className="text-sm">
+            While the worker runs, <code>status</code> is <code>queued</code> or{' '}
+            <code>processing</code> and <code>result</code> is <code>null</code>.
+            Once <code>completed</code>, <code>result</code> holds the transcript —
+            including <code>original_language</code> and <code>translated_to</code>{' '}
+            (non-null only when a translation was applied).
+          </p>
 
           <h3 className="text-base font-semibold mt-6 mb-2">Response headers</h3>
           <ul className="text-sm space-y-1">
-            <li><code>X-Transcript-Source</code>: <code>native_captions</code> or <code>whisper</code>.</li>
-            <li><code>X-Transcript-Cached</code>: <code>1</code> when served from cache, <code>0</code> when freshly fetched.</li>
-            <li><code>X-RateLimit-Limit / -Remaining / -Reset</code>: current rate limit budget.</li>
+            <li><code>X-RateLimit-Limit / -Remaining / -Reset</code>: current rate-limit budget.</li>
           </ul>
         </Section>
 
         <Section id="browse" title="Browse endpoints">
           <p>
             The same bearer key unlocks lightweight YouTube discovery endpoints
-            and the bulk-transcript endpoints. Discovery (list-only) endpoints
-            charge one credit per video returned. Bulk-transcript endpoints
-            charge one credit per transcript delivered (cache hits are free).
-            Single-video <code>/v1/video/metadata</code> is one credit.
+            and the bulk-transcript queue. Discovery (list-only) endpoints
+            charge one credit per video returned. The bulk endpoint charges one
+            credit per transcript delivered (cache hits are free). Single-video{' '}
+            <code>/v1/video/metadata</code> is one credit.
           </p>
           <ParamTable
             rows={[
@@ -128,9 +184,9 @@ export default function DocsPage() {
               { name: 'GET /v1/channel/videos', type: 'channel, limit', required: true, description: 'List videos from a channel.' },
               { name: 'GET /v1/channel/latest', type: 'channel, limit', required: true, description: 'List latest channel uploads.' },
               { name: 'GET /v1/playlist/videos', type: 'playlist, limit', required: true, description: 'Expand a YouTube playlist into video records.' },
-              { name: 'GET /v1/playlist/transcripts', type: 'playlist, limit, format, language, native_only, translate_to', required: true, description: 'Expand a playlist AND fetch a transcript per video in one call. Limit capped at 20. One credit per transcript delivered.' },
-              { name: 'GET /v1/channel/transcripts', type: 'channel, mode (latest|videos|search), q?, limit, format, language, native_only, translate_to', required: true, description: 'Expand a channel listing AND fetch a transcript per video in one call. Limit capped at 20. One credit per transcript delivered.' },
-              { name: 'GET /v1/video/metadata', type: 'url or video_id', required: true, description: 'Return title, channel, thumbnail, and canonical URL.' },
+              { name: 'GET /v1/video/metadata', type: 'url or video_id', required: true, description: 'Return title, channel, duration, view count, and thumbnail for one video.' },
+              { name: 'POST /v1/transcripts/bulk', type: 'playlist | channel | urls, format, language, native_only, translate_to, limit', required: true, description: 'Enqueue a batch of transcripts from a playlist, channel, or URL list. One credit per transcript delivered.' },
+              { name: 'GET /v1/transcripts/batches/:id', type: '(batch id in path)', required: true, description: 'Poll a bulk batch — its progress counts and per-video request rows.' },
             ]}
           />
         </Section>
@@ -183,7 +239,10 @@ export default function DocsPage() {
           </Card>
 
           <p className="text-sm">
-            All errors share the envelope <code>{'{'} error, code, message, ...details {'}'}</code>.
+            All errors share the envelope{' '}
+            <code>{'{'} error, code, message, request_id, ...details {'}'}</code>.
+            Quote the <code>request_id</code> when reporting a failure so it can
+            be traced in the logs.
           </p>
         </Section>
 

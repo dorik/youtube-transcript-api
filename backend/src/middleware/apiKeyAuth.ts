@@ -17,13 +17,18 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
         'MISSING_API_KEY',
       );
     }
-    if (!header.startsWith('Bearer ')) {
+    // RFC 7235 §2.1: the auth-scheme token is case-insensitive. Accept
+    // `Bearer`, `bearer`, `BEARER`, etc. — only the scheme is normalized;
+    // the credential itself is left exactly as sent.
+    const firstSpace = header.indexOf(' ');
+    const scheme = firstSpace === -1 ? header : header.slice(0, firstSpace);
+    if (scheme.toLowerCase() !== 'bearer') {
       throw new UnauthorizedError(
         'Authorization header must use the Bearer scheme',
         'INVALID_AUTH_SCHEME',
       );
     }
-    const key = header.slice('Bearer '.length).trim();
+    const key = firstSpace === -1 ? '' : header.slice(firstSpace + 1).trim();
     if (!key.startsWith('yt_')) {
       throw new UnauthorizedError('Invalid API key format', 'INVALID_API_KEY');
     }

@@ -347,7 +347,15 @@ async function fetchAndParseJson3(
 		body = data ?? {};
 	} catch (err) {
 		logger.warn({err, videoId}, 'Caption track fetch failed');
-		throw new NoTranscriptError(videoId);
+		// The track URL came straight from yt-dlp's dump, so a failed GET here
+		// is an upstream/network problem — very often a 429 on a datacenter IP
+		// (see the proxy note above) — NOT evidence the video lacks captions.
+		// Throwing NoTranscriptError here used to mislabel a transient block as
+		// a permanent "no captions" result, which both suppressed a meaningful
+		// error and short-circuited straight past the Whisper fallback's own
+		// (equally blocked) failure. A genuinely empty caption body is caught
+		// by the `!segments.length` check in fetchYouTubeCaptions instead.
+		throw new UpstreamBlockedError(60);
 	}
 
 	const events = body.events ?? [];
@@ -455,13 +463,21 @@ export function mapYtDlpError(
 		return new UpstreamBlockedError(60);
 	}
 
-	// Truncate stderr in the log line — yt-dlp can produce many KB of debug
-	// output and we only need the first error line for triage.
+	// Unrecognized yt-dlp failure. This is NOT evidence the video lacks
+	// captions: a genuine "captions disabled" video produces a *successful*
+	// dump with empty catalogs, handled in fetchYouTubeCaptions and never
+	// routed through here. Reaching this branch means the yt-dlp subprocess
+	// itself failed — a network blip, a bot-challenge whose wording YouTube
+	// changed, or a yt-dlp version drift. Defaulting to NoTranscriptError
+	// turned every such failure into a permanent, non-retryable "no captions"
+	// result and made the Whisper fallback look broken. Treat it as a
+	// transient upstream error so the worker retries and the caller gets an
+	// honest 503 instead of a misleading NO_TRANSCRIPT.
 	logger.warn(
 		{err, videoId, context, stderr: stderr.slice(0, 500)},
-		'yt-dlp call failed; treating as no-transcript',
+		'yt-dlp call failed with an unrecognized error; treating as upstream-blocked',
 	);
-	return new NoTranscriptError(videoId);
+	return new UpstreamBlockedError(60);
 }
 
 function isExecError(
@@ -499,49 +515,102 @@ async function runWithLimit<T>(fn: () => Promise<T>): Promise<T> {
 // ── Metadata ────────────────────────────────────────────────────────────────
 
 /**
- * Fetch lightweight video metadata via oEmbed. No API key required.
+ * Single oEmbed HTTP round-trip, shared by the lenient and strict metadata
+ * helpers below. Returns the raw payload; it does NOT decide what a failure
+ * means — that policy belongs to each caller.
  *
- * oEmbed gives us title + author + thumbnail but NOT duration; for native
- * captions we infer duration from segments. For Whisper, duration comes
- * from ffprobe on the downloaded audio.
+ * Kept as oEmbed (rather than rolled into the yt-dlp dump above) on purpose:
+ * oEmbed is a first-party YouTube API, doesn't count against scraping
+ * budgets, and is the cheapest path for metadata-only callers. It gives us
+ * title + author + thumbnail but NOT duration.
+ */
+async function fetchOEmbedData(
+	videoId: string,
+): Promise<Record<string, unknown>> {
+	const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+	const {data} = await axios.get(url, {
+		timeout: 8_000,
+		...proxyAxiosOptions(),
+	});
+	return (data ?? {}) as Record<string, unknown>;
+}
+
+function metadataFromOEmbed(
+	videoId: string,
+	data: Record<string, unknown>,
+): YouTubeMetadata {
+	return {
+		videoId,
+		// `null` (not 'Untitled') when oEmbed omits a field — a null is an
+		// honest "unknown" the caller / SQL COALESCE can react to, whereas a
+		// placeholder string would be persisted as if it were real data.
+		title: typeof data.title === 'string' ? data.title : null,
+		channel:
+			typeof data.author_name === 'string' ? data.author_name : null,
+		thumbnailUrl:
+			typeof data.thumbnail_url === 'string' ? data.thumbnail_url : null,
+	};
+}
+
+/**
+ * Fetch lightweight video metadata via oEmbed — best-effort.
  *
- * Kept as oEmbed (rather than rolled into the yt-dlp dump above) on
- * purpose — oEmbed is a first-party YouTube API, doesn't count against
- * scraping budgets, and is by far the cheapest path for the metadata-only
- * callers in `youtubeBrowseService.ts`.
+ * Every failure is swallowed into null fields. Correct for callers that use
+ * this purely to decorate an already-successful result (the worker's row
+ * prefetch, the post-transcript cache write): a missing title must never fail
+ * a request that already did its real work. Callers that BILL on the metadata
+ * itself must use `fetchYouTubeMetadataStrict` instead.
  */
 export async function fetchYouTubeMetadata(
 	videoId: string,
 ): Promise<YouTubeMetadata> {
 	try {
-		const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
-		const {data} = await axios.get(url, {
-			timeout: 8_000,
-			...proxyAxiosOptions(),
-		});
-		return {
-			videoId,
-			// `null` (not 'Untitled') when oEmbed omits a field — a null is an
-			// honest "unknown" the caller / SQL COALESCE can react to, whereas a
-			// placeholder string would be persisted as if it were real data.
-			title: typeof data.title === 'string' ? data.title : null,
-			channel:
-				typeof data.author_name === 'string' ? data.author_name : null,
-			thumbnailUrl:
-				typeof data.thumbnail_url === 'string'
-					? data.thumbnail_url
-					: null,
-		};
+		return metadataFromOEmbed(videoId, await fetchOEmbedData(videoId));
 	} catch (err) {
 		logger.warn(
 			{err, videoId},
 			'oEmbed metadata fetch failed; returning null metadata',
 		);
-		return {
-			videoId,
-			title: null,
-			channel: null,
-			thumbnailUrl: null,
-		};
+		return {videoId, title: null, channel: null, thumbnailUrl: null};
 	}
+}
+
+/**
+ * Strict counterpart to `fetchYouTubeMetadata` for callers that bill the
+ * request and therefore must NOT treat an empty result as success.
+ *
+ * A video that genuinely does not exist surfaces as `VideoNotFoundError`
+ * (404); a fetch we simply could not complete surfaces as
+ * `UpstreamBlockedError` (503). Neither path returns a placeholder the caller
+ * would be charged for, and the returned `title` is always a real string.
+ *
+ * oEmbed answers 404/401 for a video that is missing/removed/private, and
+ * 429/5xx (or a network error) when YouTube is throttling us.
+ */
+export async function fetchYouTubeMetadataStrict(
+	videoId: string,
+): Promise<YouTubeMetadata & {title: string}> {
+	let data: Record<string, unknown>;
+	try {
+		data = await fetchOEmbedData(videoId);
+	} catch (err) {
+		// A definitive "this video is not accessible" answer from oEmbed.
+		if (
+			axios.isAxiosError(err) &&
+			[400, 401, 404].includes(err.response?.status ?? 0)
+		) {
+			throw new VideoNotFoundError(videoId);
+		}
+		// 429 / 5xx / network — we could not determine anything. Upstream.
+		logger.warn({err, videoId}, 'oEmbed (strict) metadata fetch failed');
+		throw new UpstreamBlockedError(60);
+	}
+
+	// oEmbed responded 200 but without a usable title — treat as not found
+	// rather than billing the caller for an empty result.
+	if (typeof data.title !== 'string' || !data.title.trim()) {
+		throw new VideoNotFoundError(videoId);
+	}
+
+	return {...metadataFromOEmbed(videoId, data), title: data.title};
 }

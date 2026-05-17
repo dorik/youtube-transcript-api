@@ -2,8 +2,8 @@ import axios from 'axios';
 import { isProxyConfigured, proxyAxiosOptions } from '../config/proxy';
 import { logger } from '../config/logger';
 import { buildWatchUrl, extractVideoId } from '../utils/youtubeUrl';
-import { ValidationError } from '../utils/errors';
-import { fetchYouTubeMetadata } from './youtubeService';
+import { UpstreamBlockedError, ValidationError } from '../utils/errors';
+import { fetchYouTubeMetadataStrict } from './youtubeService';
 
 export type SearchType = 'video' | 'channel' | 'playlist' | 'all';
 
@@ -150,32 +150,45 @@ export async function getVideoMetadata(input: string): Promise<VideoMetadataResp
   try {
     const player = await fetchPlayerResponse(videoId);
     const details = isRecord(player.videoDetails) ? player.videoDetails : {};
-    return {
-      video_id: videoId,
-      url: buildWatchUrl(videoId),
-      title: typeof details.title === 'string' ? details.title : 'Untitled',
-      channel: typeof details.author === 'string' ? details.author : 'Unknown',
-      description:
-        typeof details.shortDescription === 'string' ? details.shortDescription : null,
-      duration_seconds:
-        typeof details.lengthSeconds === 'string' ? Number(details.lengthSeconds) : null,
-      view_count: typeof details.viewCount === 'string' ? Number(details.viewCount) : null,
-      thumbnail_url: thumbnailFromPlayer(details),
-    };
+    // Only treat the player scrape as a hit when it actually carried a title.
+    // A removed / private / nonexistent video still returns a player page,
+    // but with no usable videoDetails — fall through to the oEmbed probe so
+    // we return an honest 404 instead of a charged "Untitled/Unknown" row.
+    if (typeof details.title === 'string' && details.title.trim()) {
+      return {
+        video_id: videoId,
+        url: buildWatchUrl(videoId),
+        title: details.title,
+        channel: typeof details.author === 'string' ? details.author : 'Unknown',
+        description:
+          typeof details.shortDescription === 'string' ? details.shortDescription : null,
+        duration_seconds:
+          typeof details.lengthSeconds === 'string' ? Number(details.lengthSeconds) : null,
+        view_count: typeof details.viewCount === 'string' ? Number(details.viewCount) : null,
+        thumbnail_url: thumbnailFromPlayer(details),
+      };
+    }
+    logger.warn({ videoId }, 'Player response carried no videoDetails; falling back to oEmbed');
   } catch (err) {
     logger.warn({ err, videoId }, 'Player metadata fetch failed; falling back to oEmbed');
-    const metadata = await fetchYouTubeMetadata(videoId);
-    return {
-      video_id: videoId,
-      url: buildWatchUrl(videoId),
-      title: metadata.title ?? 'Untitled',
-      channel: metadata.channel ?? 'Unknown',
-      description: null,
-      duration_seconds: null,
-      view_count: null,
-      thumbnail_url: metadata.thumbnailUrl,
-    };
   }
+
+  // Strict oEmbed probe: throws VideoNotFoundError (404) for a video that
+  // does not exist and UpstreamBlockedError (503) when the fetch itself
+  // failed. It never yields a placeholder — so the route's chargeBrowseCredit
+  // call, which runs only on a successful return, can't bill an empty result.
+  const metadata = await fetchYouTubeMetadataStrict(videoId);
+  return {
+    video_id: videoId,
+    url: buildWatchUrl(videoId),
+    // fetchYouTubeMetadataStrict guarantees a real title (it throws otherwise).
+    title: metadata.title,
+    channel: metadata.channel ?? 'Unknown',
+    description: null,
+    duration_seconds: null,
+    view_count: null,
+    thumbnail_url: metadata.thumbnailUrl,
+  };
 }
 
 async function fetchInitialData(url: string): Promise<unknown> {
@@ -192,7 +205,15 @@ async function fetchInitialData(url: string): Promise<unknown> {
     return extractInitialData(data);
   } catch (err) {
     logger.warn({ err, url, proxyConfigured: isProxyConfigured() }, 'YouTube browse fetch failed');
-    throw err;
+    // Any failure here — an axios error (429 / network), a YouTube consent or
+    // bot-challenge page that carries no `ytInitialData` marker, or page
+    // JSON we could not parse — means we could not get usable data from
+    // YouTube. The caller's input was already schema-validated at the route,
+    // so this is always an upstream problem, never the client's fault.
+    // Surface a transient 503 UPSTREAM_BLOCKED instead of letting a raw
+    // axios error or SyntaxError escape as an opaque 500 INTERNAL_ERROR.
+    if (err instanceof UpstreamBlockedError) throw err;
+    throw new UpstreamBlockedError(60);
   }
 }
 
