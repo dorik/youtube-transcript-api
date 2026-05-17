@@ -1,13 +1,13 @@
 import { redis } from '../cache/redis';
-import { pool } from '../db/pool';
+import { pool, withTransaction } from '../db/pool';
 import { logger } from '../config/logger';
 import { Segment } from './formatters';
 
 export interface CachedTranscript {
   videoId: string;
   language: string;
-  title: string;
-  channel: string;
+  title: string | null;
+  channel: string | null;
   durationSeconds: number;
   source: 'native_captions' | 'whisper';
   transcript: string;
@@ -99,8 +99,8 @@ export async function getCached(
   const cached: CachedTranscript = {
     videoId: row.video_id,
     language: row.language,
-    title: row.title ?? 'Untitled',
-    channel: row.channel ?? 'Unknown',
+    title: row.title,
+    channel: row.channel,
     durationSeconds: row.duration_seconds ?? 0,
     source: (row.source as CachedTranscript['source']) ?? 'native_captions',
     transcript: row.transcript_text,
@@ -158,8 +158,8 @@ export async function setCached(
            transcript_text, segments, character_count, segment_count, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW() + INTERVAL '30 days')
          ON CONFLICT (video_id, language) DO UPDATE
-           SET title = EXCLUDED.title,
-               channel = EXCLUDED.channel,
+           SET title = COALESCE(EXCLUDED.title, cached_transcripts.title),
+               channel = COALESCE(EXCLUDED.channel, cached_transcripts.channel),
                duration_seconds = EXCLUDED.duration_seconds,
                source = EXCLUDED.source,
                transcript_text = EXCLUDED.transcript_text,
@@ -196,10 +196,11 @@ export async function setCached(
 // ---------------------------------------------------------------------------
 // Cache invalidation
 //
-// `clearCache(videoId?)` wipes both tiers (Redis + Postgres) for either a
-// single video or every cached entry. Used by the admin endpoint and the
-// one-off scripts. Rate-limit keys (`ratelimit:*`) are deliberately left
-// alone — they're not cache and self-expire in 60s anyway.
+// `clearCache(videoId?)` clears transcript content from Redis + Postgres for
+// either a single video or every entry. `cached_transcripts` rows are kept
+// and their metadata (title/channel/duration) preserved — only the transcript
+// columns are cleared. `translated_transcripts` is fully removed. Rate-limit
+// keys (`ratelimit:*`) are deliberately left alone — they self-expire in 60s.
 //
 // Counts are returned so the caller can report meaningful telemetry rather
 // than "ok".
@@ -232,51 +233,59 @@ async function scanDelete(pattern: string): Promise<number> {
 }
 
 /**
- * TRUNCATE both Postgres cache tables atomically, returning the row counts
- * that existed before the wipe (for telemetry). TRUNCATE is faster than
- * DELETE and resets the identity counters; both tables are pure cache so
- * losing the rows is safe.
+ * Shared SET clause: clears the transcript CONTENT columns and expires the
+ * row, while deliberately NOT touching `title` / `channel` /
+ * `duration_seconds`. Those metadata columns must outlive a flush so
+ * `/me/transcripts` can still render title/channel/duration.
+ *
+ * `expires_at = NOW()` makes the row fail `getCached`'s `expires_at > NOW()`
+ * filter, so the next request cache-misses and re-fetches the transcript.
+ *
+ * `transcript_text` is set to `''` (not NULL) to satisfy its NOT NULL
+ * constraint — a reader that bypasses the `expires_at` guard should treat an
+ * empty string as "content cleared".
  */
-async function truncateCacheTables(): Promise<{
+const CLEAR_TRANSCRIPT_SET = `
+  SET transcript_text = '',
+      segments        = '[]'::jsonb,
+      character_count = 0,
+      segment_count   = 0,
+      expires_at      = NOW()`;
+
+/**
+ * Clear transcript content from the Postgres cache while preserving video
+ * metadata. `cached_transcripts` is UPDATEd in place (not dropped);
+ * `translated_transcripts` holds no metadata so it is truncated outright.
+ * Runs in one transaction; returns pre-existing counts for telemetry
+ * (`cached_transcripts` = rows whose transcript was cleared).
+ */
+async function invalidateCacheTables(): Promise<{
   cached_transcripts: number;
   translated_transcripts: number;
 }> {
-  let cachedRows = 0;
-  let translatedRows = 0;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const { rows: c } = await client.query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM cached_transcripts',
-    );
-    const { rows: tr } = await client.query<{ count: string }>(
+  return withTransaction(async (client) => {
+    const { rows } = await client.query<{ count: string }>(
       'SELECT COUNT(*)::text AS count FROM translated_transcripts',
     );
-    cachedRows = Number(c[0]?.count ?? 0);
-    translatedRows = Number(tr[0]?.count ?? 0);
-    await client.query(
-      'TRUNCATE cached_transcripts, translated_transcripts RESTART IDENTITY',
+    const { rowCount: invalidated } = await client.query(
+      `UPDATE cached_transcripts ${CLEAR_TRANSCRIPT_SET}`,
     );
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-  return {
-    cached_transcripts: cachedRows,
-    translated_transcripts: translatedRows,
-  };
+    await client.query('TRUNCATE translated_transcripts RESTART IDENTITY');
+    return {
+      cached_transcripts: invalidated ?? 0,
+      translated_transcripts: Number(rows[0]?.count ?? 0),
+    };
+  });
 }
 
 export async function clearCache(videoId?: string): Promise<ClearCacheResult> {
   if (videoId) {
-    // Targeted clear: only the keys/rows for this video.
+    // Targeted clear: invalidate this video's transcript but keep its
+    // metadata row. translated_transcripts has no metadata, so DELETE it.
     const t = await scanDelete(`transcript:${videoId}:*`);
     const tr = await scanDelete(`translation:${videoId}:*`);
     const { rowCount: ct } = await pool.query(
-      'DELETE FROM cached_transcripts WHERE video_id = $1',
+      `UPDATE cached_transcripts ${CLEAR_TRANSCRIPT_SET} WHERE video_id = $1`,
       [videoId],
     );
     const { rowCount: tt } = await pool.query(
@@ -291,12 +300,12 @@ export async function clearCache(videoId?: string): Promise<ClearCacheResult> {
     };
   }
 
-  // Full wipe. Use SCAN (non-blocking) so a large keyspace doesn't lock
+  // Full flush. Use SCAN (non-blocking) so a large keyspace doesn't lock
   // Redis while it runs.
   const t = await scanDelete('transcript:*');
   const tr = await scanDelete('translation:*');
 
-  const postgres = await truncateCacheTables();
+  const postgres = await invalidateCacheTables();
 
   return {
     scope: 'all',
@@ -313,17 +322,15 @@ export interface FlushAllResult {
 }
 
 /**
- * Hard reset of the entire cache.
+ * Hard reset of the cache.
  *
- * Unlike `clearCache()` — which scoped-deletes only `transcript:*` /
- * `translation:*` keys — this runs Redis `FLUSHALL`, wiping the WHOLE Redis
- * instance, `ratelimit:*` keys included. Those simply rebuild on the next
- * request and self-expire in 60s, so the blast radius is acceptable for an
- * operator "clear everything" action.
+ * Runs Redis `FLUSHALL`, wiping the WHOLE Redis instance (`ratelimit:*` keys
+ * included — they rebuild on the next request and self-expire in 60s).
  *
- * The Postgres cache tables are truncated in the same call. This is the
- * important half: without it, the cold tier would re-warm Redis with the
- * old rows on the very next read and the flush would appear to do nothing.
+ * The Postgres side clears only transcript CONTENT: `cached_transcripts` rows
+ * are UPDATEd in place so video metadata (title/channel/duration) survives,
+ * and `translated_transcripts` is truncated. Without this Postgres half, the
+ * cold tier would re-warm Redis with the old transcripts on the next read.
  */
 export async function flushAllCache(): Promise<FlushAllResult> {
   // Snapshot the key count before the wipe so the caller gets a meaningful
@@ -336,7 +343,7 @@ export async function flushAllCache(): Promise<FlushAllResult> {
   }
 
   await redis.flushall();
-  const postgres = await truncateCacheTables();
+  const postgres = await invalidateCacheTables();
 
   return { redis: { keysDeleted }, postgres };
 }

@@ -631,8 +631,10 @@ function formatResponse(opts: FormatResponseOptions): TranscriptResponse {
 	const base = {
 		video_id: payload.videoId,
 		url: buildWatchUrl(payload.videoId),
-		title: payload.title,
-		channel: payload.channel,
+		// The cache stores an honest `null` when metadata is unknown; the API
+		// response always carries a display value, so coalesce at this boundary.
+		title: payload.title ?? 'Untitled',
+		channel: payload.channel ?? 'Unknown',
 		duration: payload.durationSeconds,
 		language: opts.displayLanguage,
 		original_language: opts.originalLanguage,

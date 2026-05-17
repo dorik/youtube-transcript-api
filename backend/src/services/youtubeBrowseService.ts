@@ -168,8 +168,8 @@ export async function getVideoMetadata(input: string): Promise<VideoMetadataResp
     return {
       video_id: videoId,
       url: buildWatchUrl(videoId),
-      title: metadata.title,
-      channel: metadata.channel,
+      title: metadata.title ?? 'Untitled',
+      channel: metadata.channel ?? 'Unknown',
       description: null,
       duration_seconds: null,
       view_count: null,
