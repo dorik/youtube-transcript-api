@@ -5,7 +5,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { extractVideoId } from '@/lib/youtube-url';
 import type { BulkResultEntry } from './types';
 import { shortVideoId } from './utils';
 import { RenderedResult } from './RenderedResult';
@@ -20,16 +19,12 @@ export function ResultsCard({
   activeIdx,
   onSelect,
   showTimestamps,
-  language,
-  translateTo,
 }: {
   results: BulkResultEntry[] | null;
   submitting: boolean;
   activeIdx: number;
   onSelect: (i: number) => void;
   showTimestamps: boolean;
-  language: string;
-  translateTo: string;
 }) {
   if (results === null && !submitting) {
     return (
@@ -70,6 +65,20 @@ export function ResultsCard({
     }
   }
 
+  // "Open in viewer" deep-link. The dashboard viewer route is keyed on
+  // the transcript-request UUID (/dashboard/transcripts/[id]), and
+  // GET /me/transcripts/:id is user-scoped — the API key's owner is the
+  // same logged-in dashboard user, so linking by request id resolves.
+  const viewerHref =
+    active?.ok && active.requestId
+      ? `/dashboard/transcripts/${active.requestId}`
+      : null;
+  // Bulk runs (playlist/channel) end up with N results in the tab strip;
+  // opening one in the viewer with a same-tab nav drops the other N-1
+  // from the screen. Open in a new tab when there's more than one result
+  // so the playground stays available.
+  const openViewerInNewTab = (results?.length ?? 0) > 1;
+
   return (
     <Card>
       <CardHeader>
@@ -97,37 +106,18 @@ export function ResultsCard({
               Copy response
             </Button>
           )}
-          {active?.ok && active.data && (() => {
-            // Dashboard viewer is path-based: /dashboard/transcripts/[videoId].
-            // Prefer the canonical video_id from the response (handles
-            // shortened youtu.be / embed / live URLs); fall back to
-            // parsing the request URL on the rare chance the response
-            // doesn't include it.
-            const videoId = active.data.video_id ?? extractVideoId(active.url);
-            if (!videoId) return null;
-            const qs = new URLSearchParams();
-            if (language !== 'auto') qs.set('language', language);
-            if (translateTo !== 'none') qs.set('translate_to', translateTo);
-            const search = qs.toString();
-            const href = `/dashboard/transcripts/${videoId}${search ? `?${search}` : ''}`;
-            // Bulk runs (playlist/channel) end up with N results in the tab
-            // strip; opening one in the viewer with a same-tab nav drops the
-            // other N-1 from the screen. Open in a new tab when there's more
-            // than one result so the playground stays available.
-            const openInNewTab = (results?.length ?? 0) > 1;
-            return (
-              <Link
-                href={href}
-                {...(openInNewTab
-                  ? {target: '_blank', rel: 'noreferrer'}
-                  : {})}
-                className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
-              >
-                Open in viewer
-                <ExternalLink className="h-3 w-3" />
-              </Link>
-            );
-          })()}
+          {viewerHref && (
+            <Link
+              href={viewerHref}
+              {...(openViewerInNewTab
+                ? { target: '_blank', rel: 'noreferrer' }
+                : {})}
+              className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline"
+            >
+              Open in viewer
+              <ExternalLink className="h-3 w-3" />
+            </Link>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent>

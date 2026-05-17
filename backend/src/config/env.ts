@@ -44,6 +44,13 @@ const EnvSchema = z.object({
   RATE_LIMIT_REQUESTS_PER_MIN: z.coerce.number().default(100),
 
   /**
+   * How many transcript jobs the in-process BullMQ worker runs in parallel.
+   * Kept low (2) because each job can spawn yt-dlp + ffmpeg + Whisper, which
+   * is memory-heavy on the 512 MB Render instance.
+   */
+  QUEUE_CONCURRENCY: z.coerce.number().int().min(1).max(10).default(2),
+
+  /**
    * Shared secret for `POST /flush-cache?secret=...`. When unset, that route
    * 404s — i.e. the endpoint is disabled unless a secret is explicitly
    * configured for the environment. Each environment (local/dev/prod) sets

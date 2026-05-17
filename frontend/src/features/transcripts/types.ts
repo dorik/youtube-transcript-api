@@ -1,19 +1,40 @@
 import type {
-  FetchTranscriptInput,
-  HistoryResponse,
+  BatchCreateResponse,
+  BatchDetailResponse,
+  RequestListResponse,
+  TranscriptRequest,
   TranscriptResponse,
 } from '@/lib/api';
 
-export interface ListTranscriptsInput {
+export interface CreateTranscriptInput {
+  url: string;
+  format?: string;
+  language?: string;
+  native_only?: boolean;
+  translate_to?: string;
+}
+
+export interface CreateBatchInput {
+  /** Exactly one of playlist / channel / urls. */
+  playlist?: string;
+  channel?: string;
+  urls?: string[];
+  format?: string;
+  language?: string;
+  native_only?: boolean;
+  translate_to?: string;
+  limit?: number;
+}
+
+export interface ListRequestsInput {
   limit?: number;
   offset?: number;
-  q?: string;
 }
 
-export type FetchTranscriptAsUserInput = FetchTranscriptInput;
-
-export interface FetchTranscriptWithBearerInput extends FetchTranscriptInput {
-  bearer: string;
-}
-
-export type { FetchTranscriptInput, HistoryResponse, TranscriptResponse };
+export type {
+  BatchCreateResponse,
+  BatchDetailResponse,
+  RequestListResponse,
+  TranscriptRequest,
+  TranscriptResponse,
+};

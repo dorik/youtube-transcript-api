@@ -2,73 +2,101 @@ import { apiClient } from '@/lib/http/client';
 import { createApi } from '@/lib/http/createApi';
 import { methodsEnums } from '@/lib/http/constants';
 import type {
-  FetchTranscriptAsUserInput,
-  FetchTranscriptInput,
-  FetchTranscriptWithBearerInput,
-  HistoryResponse,
-  ListTranscriptsInput,
-  TranscriptResponse,
+  BatchCreateResponse,
+  BatchDetailResponse,
+  CreateBatchInput,
+  CreateTranscriptInput,
+  ListRequestsInput,
+  RequestListResponse,
+  TranscriptRequest,
 } from './types';
 
-function transcriptQuery(input: FetchTranscriptInput) {
-  const translate =
-    input.translate_to && input.translate_to !== 'none' ? input.translate_to : undefined;
-
+function createTranscriptRequestQuery(input: CreateTranscriptInput) {
   return {
-    url: input.url,
-    format: input.format,
-    language: input.language,
-    native_only: input.native_only ? 'true' : undefined,
-    translate_to: translate,
+    url: '/me/transcripts',
+    method: methodsEnums.POST,
+    data: input,
   };
 }
 
-function listTranscriptsQuery(input: ListTranscriptsInput) {
+function createTranscriptBatchQuery(input: CreateBatchInput) {
+  return {
+    url: '/me/transcripts/bulk',
+    method: methodsEnums.POST,
+    data: input,
+  };
+}
+
+function listTranscriptRequestsQuery(input: ListRequestsInput) {
   return {
     url: '/me/transcripts',
     method: methodsEnums.GET,
-    params: input,
+    params: { limit: input.limit, offset: input.offset },
   };
 }
 
-function fetchTranscriptAsUserQuery(input: FetchTranscriptAsUserInput) {
+function getTranscriptRequestQuery(id: string) {
   return {
-    url: '/me/transcript',
+    url: `/me/transcripts/${id}`,
     method: methodsEnums.GET,
-    params: transcriptQuery(input),
   };
 }
 
-function fetchTranscriptWithBearerQuery({
-  bearer,
-  ...input
-}: FetchTranscriptWithBearerInput) {
+function cancelTranscriptRequestQuery(id: string) {
   return {
-    url: '/v1/transcript',
-    method: methodsEnums.GET,
-    params: transcriptQuery(input),
-    config: {
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-      },
-    },
+    url: `/me/transcripts/${id}`,
+    method: methodsEnums.DELETE,
   };
 }
 
-export const listTranscripts = createApi<ListTranscriptsInput, HistoryResponse>({
-  queryFn: apiClient,
-  query: listTranscriptsQuery,
-});
+function getTranscriptBatchQuery(id: string) {
+  return {
+    url: `/me/transcripts/batches/${id}`,
+    method: methodsEnums.GET,
+  };
+}
 
-export const fetchTranscriptAsUser = createApi<FetchTranscriptAsUserInput, TranscriptResponse>({
-  queryFn: apiClient,
-  query: fetchTranscriptAsUserQuery,
-});
-
-export const fetchTranscriptWithBearer = createApi<
-  FetchTranscriptWithBearerInput,
-  TranscriptResponse
+/** POST /me/transcripts — enqueue one request. */
+export const createTranscriptRequest = createApi<
+  CreateTranscriptInput,
+  TranscriptRequest
 >({
   queryFn: apiClient,
-  query: fetchTranscriptWithBearerQuery,
+  request: createTranscriptRequestQuery,
+});
+
+/** POST /me/transcripts/bulk — enqueue a playlist/channel/url-list batch. */
+export const createTranscriptBatch = createApi<
+  CreateBatchInput,
+  BatchCreateResponse
+>({
+  queryFn: apiClient,
+  request: createTranscriptBatchQuery,
+});
+
+/** GET /me/transcripts — paginated list of the user's requests. */
+export const listTranscriptRequests = createApi<
+  ListRequestsInput,
+  RequestListResponse
+>({
+  queryFn: apiClient,
+  query: listTranscriptRequestsQuery,
+});
+
+/** GET /me/transcripts/:id — one request. */
+export const getTranscriptRequest = createApi<string, TranscriptRequest>({
+  queryFn: apiClient,
+  query: getTranscriptRequestQuery,
+});
+
+/** DELETE /me/transcripts/:id — cancel a queued request. */
+export const cancelTranscriptRequest = createApi<string, TranscriptRequest>({
+  queryFn: apiClient,
+  request: cancelTranscriptRequestQuery,
+});
+
+/** GET /me/transcripts/batches/:id — batch summary + entries. */
+export const getTranscriptBatch = createApi<string, BatchDetailResponse>({
+  queryFn: apiClient,
+  query: getTranscriptBatchQuery,
 });

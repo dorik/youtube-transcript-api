@@ -198,6 +198,82 @@ export interface TranscriptResponse {
   fetched_at: string;
 }
 
+export type RequestStatus =
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'canceled';
+
+export interface TranscriptRequestConfig {
+  url: string;
+  format: string;
+  language?: string;
+  native_only?: boolean;
+  translate_to?: string;
+}
+
+/** A transcript_requests row — the unit of the async queue. */
+export interface TranscriptRequest {
+  id: string;
+  source: 'api' | 'dashboard';
+  status: RequestStatus;
+  request: TranscriptRequestConfig;
+  video_id: string | null;
+  title: string | null;
+  channel: string | null;
+  duration_seconds: number | null;
+  thumbnail_url: string | null;
+  attempts: number;
+  result: TranscriptResponse | null;
+  credits_used: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  batch_id: string | null;
+  batch_position: number | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface TranscriptBatch {
+  id: string;
+  kind: 'playlist' | 'channel' | 'videos';
+  source_url: string | null;
+  label: string | null;
+  total: number;
+  created_at: string;
+}
+
+export interface BatchProgress {
+  queued: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+}
+
+export interface RequestListResponse {
+  items: TranscriptRequest[];
+  total: number;
+  /** Metadata for every batch referenced by `items` — used to render batch
+   *  group headers without a per-batch detail fetch. */
+  batches: TranscriptBatch[];
+  limit: number;
+  offset: number;
+}
+
+export interface BatchDetailResponse {
+  batch: TranscriptBatch;
+  progress: BatchProgress;
+  requests: TranscriptRequest[];
+}
+
+export interface BatchCreateResponse {
+  batch: TranscriptBatch;
+  requests: TranscriptRequest[];
+}
+
 /* -------------------- API surface -------------------- */
 
 export const auth = {
@@ -235,69 +311,3 @@ export const usage = {
   get: () => api<UsageResponse>('/me/usage'),
 };
 
-export interface FetchTranscriptInput {
-  url: string;
-  format?: string;
-  language?: string;
-  /** Skip Whisper fallback if no native captions exist. */
-  native_only?: boolean;
-  /** ISO 639-1 target. 'none' / undefined = no translation. */
-  translate_to?: string;
-}
-
-function transcriptQuery(input: FetchTranscriptInput) {
-  const translate =
-    input.translate_to && input.translate_to !== 'none' ? input.translate_to : undefined;
-  return {
-    url: input.url,
-    format: input.format,
-    language: input.language,
-    native_only: input.native_only ? 'true' : undefined,
-    translate_to: translate,
-  };
-}
-
-export interface HistoryItem {
-  video_id: string;
-  title: string | null;
-  channel: string | null;
-  duration_seconds: number | null;
-  language: string | null;
-  thumbnail_url: string;
-  last_fetched_at: string;
-  fetch_count: number;
-  last_format: string | null;
-  last_source: 'native_captions' | 'whisper' | null;
-  last_cache_hit: boolean | null;
-  last_credits_used: number | null;
-}
-
-export interface HistoryResponse {
-  items: HistoryItem[];
-  total: number;
-  limit: number;
-  offset: number;
-}
-
-export const transcripts = {
-  fetch: (bearer: string, input: FetchTranscriptInput) =>
-    api<TranscriptResponse>('/v1/transcript', {
-      bearer,
-      query: transcriptQuery(input),
-    }),
-  /**
-   * Cookie-authed fetch — used by the dashboard transcript viewer so we
-   * don't have to expose plaintext API keys to the browser.
-   */
-  fetchAsUser: (input: FetchTranscriptInput) =>
-    api<TranscriptResponse>('/me/transcript', {
-      query: transcriptQuery(input),
-    }),
-  /**
-   * Per-user transcript history. One row per video_id, most recent first.
-   */
-  listMine: (input: { limit?: number; offset?: number; q?: string } = {}) =>
-    api<HistoryResponse>('/me/transcripts', {
-      query: { limit: input.limit, offset: input.offset, q: input.q },
-    }),
-};

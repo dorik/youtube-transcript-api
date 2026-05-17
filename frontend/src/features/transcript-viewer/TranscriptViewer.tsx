@@ -1,41 +1,49 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
-import { toast } from 'sonner';
-import { ExternalLink, Copy, Search, Maximize2, Download, Languages } from 'lucide-react';
-import { mountPlayer, type PlayerHandle } from '@/lib/youtube-player';
-import type { TranscriptSegment } from '@/lib/api';
-import { BLOB_URL_TTL_MS } from '@/lib/constants';
-import { SearchableSelect } from '@/components/ui/searchable-select';
-import { TARGET_LANGUAGE_OPTIONS } from '@/lib/languages';
-import { SubtitleOverlay } from './SubtitleOverlay';
-import { SubtitleSettingsPopover } from './SubtitleSettingsPopover';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { toast } from "sonner";
+import {
+  ExternalLink,
+  Copy,
+  Search,
+  Maximize2,
+  Download,
+  Languages,
+  Loader2,
+} from "lucide-react";
+import { mountPlayer, type PlayerHandle } from "@/lib/youtube-player";
+import type { TranscriptSegment } from "@/lib/api";
+import { BLOB_URL_TTL_MS } from "@/lib/constants";
+import { SearchableSelect } from "@/components/ui/searchable-select";
+import { TARGET_LANGUAGE_OPTIONS } from "@/lib/languages";
+import { SubtitleOverlay } from "./SubtitleOverlay";
+import { SubtitleSettingsPopover } from "./SubtitleSettingsPopover";
 import {
   loadSubtitleSettings,
   saveSubtitleSettings,
   type SubtitleSettings,
   DEFAULT_SUBTITLE_SETTINGS,
-} from '@/lib/subtitle-settings';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Label } from '@/components/ui/label';
+} from "@/lib/subtitle-settings";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { cn } from '@/lib/utils';
-import { formatTimecode } from '@/lib/format';
-import type { TranscriptViewerProps } from './types';
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+import { formatTimecode } from "@/lib/format";
+import type { TranscriptViewerProps } from "./types";
 import {
   findActiveSegment,
   formatDuration,
   segmentsToSubtitles,
   wordCount,
-} from './utils';
+} from "./utils";
 
 /**
  * Two-pane transcript viewer: YouTube IFrame on the left, segmented
@@ -49,7 +57,7 @@ export function TranscriptViewer({
 }: TranscriptViewerProps) {
   const [theatre, setTheatre] = useState(false);
   const [autoscroll, setAutoscroll] = useState(true);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState("");
   const [activeIndex, setActiveIndex] = useState<number>(-1);
   // When a translation was applied, the user can flip between the
   // translated text (default) and the original-language text. The toggle
@@ -61,15 +69,20 @@ export function TranscriptViewer({
   // 4 Hz state in the viewer; the rest only update when the active index
   // actually changes, so re-render cost stays modest.
   const [currentTime, setCurrentTime] = useState(0);
+  // The translation target the user last picked, captured so the
+  // in-progress banner can name the language. `null` means they cleared
+  // the translation (back to the original transcript).
+  const [translatingTo, setTranslatingTo] = useState<string | null>(null);
 
   // Some videos can't be embedded — the owner disabled embedding (common for
   // music-label channels) or the video has been removed. The YouTube iframe
   // renders a "Video unavailable" message in that case; we swap to a clean
   // thumbnail + "Watch on YouTube" CTA instead. Reset on video change so a
   // navigation away clears the prior failure.
-  const [embedError, setEmbedError] = useState<
-    null | { embedDisabled: boolean; removed: boolean }
-  >(null);
+  const [embedError, setEmbedError] = useState<null | {
+    embedDisabled: boolean;
+    removed: boolean;
+  }>(null);
   useEffect(() => {
     setEmbedError(null);
   }, [data.video_id]);
@@ -104,7 +117,8 @@ export function TranscriptViewer({
   }, [data.segments, data.original_segments, showOriginal]);
 
   const transcriptText: string = useMemo(() => {
-    if (showOriginal && data.original_transcript) return data.original_transcript;
+    if (showOriginal && data.original_transcript)
+      return data.original_transcript;
     return data.transcript;
   }, [data.transcript, data.original_transcript, showOriginal]);
 
@@ -141,7 +155,7 @@ export function TranscriptViewer({
       {
         onError: (e) => {
           if (cancelled) return;
-          setEmbedError({embedDisabled: e.embedDisabled, removed: e.removed});
+          setEmbedError({ embedDisabled: e.embedDisabled, removed: e.removed });
         },
       },
     )
@@ -154,9 +168,9 @@ export function TranscriptViewer({
         playerHandleRef.current = h;
       })
       .catch((err) => {
-        if (process.env.NODE_ENV !== 'production') {
+        if (process.env.NODE_ENV !== "production") {
           // eslint-disable-next-line no-console -- dev-only diagnostic; the player simply doesn't render in prod
-          console.error('YouTube player failed to mount', err);
+          console.error("YouTube player failed to mount", err);
         }
       });
 
@@ -172,16 +186,28 @@ export function TranscriptViewer({
   useEffect(() => {
     if (!autoscroll || activeIndex < 0) return;
     const el = segmentRefs.current[activeIndex];
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeIndex, autoscroll]);
 
   const filteredSegments = useMemo(() => {
-    if (!search.trim()) return segments.map((s, i) => ({ ...s, originalIndex: i }));
+    if (!search.trim())
+      return segments.map((s, i) => ({ ...s, originalIndex: i }));
     const q = search.toLowerCase();
     return segments
       .map((s, i) => ({ ...s, originalIndex: i }))
       .filter((s) => s.text.toLowerCase().includes(q));
   }, [segments, search]);
+
+  // Picking a language records the target (for the banner) and hands off
+  // to the page, which queues the request and flips `isRefetching` on.
+  const handleTranslateChange = useCallback(
+    (value: string) => {
+      const target = value === "none" ? null : value;
+      setTranslatingTo(target);
+      onTranslateTargetChange?.(target);
+    },
+    [onTranslateTargetChange],
+  );
 
   function onSegmentClick(seconds: number) {
     playerHandleRef.current?.seekTo(seconds);
@@ -191,36 +217,36 @@ export function TranscriptViewer({
     try {
       // Copy whichever language the user is currently looking at.
       await navigator.clipboard.writeText(transcriptText);
-      toast.success('Transcript copied to clipboard');
+      toast.success("Transcript copied to clipboard");
     } catch {
-      toast.error('Could not access clipboard');
+      toast.error("Could not access clipboard");
     }
   }
 
-  function download(format: 'txt' | 'srt' | 'vtt' | 'json') {
+  function download(format: "txt" | "srt" | "vtt" | "json") {
     try {
       const ext = format;
       const mime =
-        format === 'srt'
-          ? 'application/x-subrip'
-          : format === 'vtt'
-            ? 'text/vtt'
-            : format === 'json'
-              ? 'application/json'
-              : 'text/plain';
+        format === "srt"
+          ? "application/x-subrip"
+          : format === "vtt"
+            ? "text/vtt"
+            : format === "json"
+              ? "application/json"
+              : "text/plain";
       const content =
-        format === 'json'
+        format === "json"
           ? JSON.stringify(data, null, 2)
-          : format === 'txt'
+          : format === "txt"
             ? transcriptText
             : segmentsToSubtitles(segments, format);
 
-      if (!content || (typeof content === 'string' && !content.trim())) {
-        toast.error('Nothing to export — the transcript is empty.');
+      if (!content || (typeof content === "string" && !content.trim())) {
+        toast.error("Nothing to export — the transcript is empty.");
         return;
       }
 
-      const langSuffix = showOriginal ? `.${data.original_language}` : '';
+      const langSuffix = showOriginal ? `.${data.original_language}` : "";
       const filename = `${data.video_id}${langSuffix}.${ext}`;
       const blob = new Blob([content], { type: `${mime};charset=utf-8` });
 
@@ -228,11 +254,11 @@ export function TranscriptViewer({
       // .click() will start a download. Chrome doesn't, but appending is
       // harmless there. We also defer revokeObjectURL — calling it
       // synchronously can race the download on some browsers.
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       const url = URL.createObjectURL(blob);
       a.href = url;
       a.download = filename;
-      a.style.display = 'none';
+      a.style.display = "none";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -242,17 +268,41 @@ export function TranscriptViewer({
     } catch {
       // The user already sees the toast; no value in a console line that
       // gets stripped in production anyway.
-      toast.error('Could not start the download.');
+      toast.error("Could not start the download.");
     }
   }
 
+  // While a translation is queued the page keeps this viewer mounted with
+  // the previous transcript and `isRefetching` on; the banner explains why
+  // the content hasn't changed yet.
+  const translatingLabel =
+    TARGET_LANGUAGE_OPTIONS.find((l) => l.code === translatingTo)?.label ??
+    translatingTo;
+
   return (
     <div className="space-y-4">
+      {isRefetching && (
+        <div className="flex items-center gap-2.5 rounded-md border bg-muted/50 px-3 py-2.5 text-sm">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+          <span>
+            {translatingTo
+              ? `Translating to ${translatingLabel}… `
+              : "Loading the original transcript… "}
+            <span className="text-muted-foreground">
+              The transcript will update automatically when it&apos;s ready.
+            </span>
+          </span>
+        </div>
+      )}
+
       {/* Header card */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between border-b pb-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1 flex-wrap">
-            <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+            <Badge
+              variant="outline"
+              className="bg-red-50 text-red-700 border-red-200"
+            >
               YouTube
             </Badge>
             <span className="font-mono">{data.video_id}</span>
@@ -265,7 +315,8 @@ export function TranscriptViewer({
           </div>
           <h1 className="text-xl font-semibold truncate">{data.title}</h1>
           <p className="text-sm text-muted-foreground">
-            {data.channel} · {formatDuration(data.duration)} · {data.source.replace('_', ' ')}
+            {data.channel} · {formatDuration(data.duration)} ·{" "}
+            {data.source.replace("_", " ")}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap shrink-0">
@@ -279,10 +330,10 @@ export function TranscriptViewer({
                 type="button"
                 onClick={() => setShowOriginal(false)}
                 className={cn(
-                  'px-2.5 py-1 rounded transition-colors uppercase tracking-wide',
+                  "px-2.5 py-1 rounded transition-colors uppercase tracking-wide",
                   !showOriginal
-                    ? 'bg-foreground text-background'
-                    : 'text-muted-foreground hover:text-foreground',
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {data.translated_to}
@@ -291,10 +342,10 @@ export function TranscriptViewer({
                 type="button"
                 onClick={() => setShowOriginal(true)}
                 className={cn(
-                  'px-2.5 py-1 rounded transition-colors uppercase tracking-wide',
+                  "px-2.5 py-1 rounded transition-colors uppercase tracking-wide",
                   showOriginal
-                    ? 'bg-foreground text-background'
-                    : 'text-muted-foreground hover:text-foreground',
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 {data.original_language}
@@ -305,9 +356,13 @@ export function TranscriptViewer({
             settings={subtitleSettings}
             onChange={updateSubtitleSettings}
           />
-          <Button variant="outline" size="sm" onClick={() => setTheatre((v) => !v)}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setTheatre((v) => !v)}
+          >
             <Maximize2 className="h-4 w-4 mr-1.5" />
-            {theatre ? 'Exit theatre' : 'Theatre Mode'}
+            {theatre ? "Exit theatre" : "Theatre Mode"}
           </Button>
           <Button asChild variant="outline" size="sm">
             <a href={data.url} target="_blank" rel="noopener noreferrer">
@@ -321,8 +376,8 @@ export function TranscriptViewer({
       {/* Two-pane layout */}
       <div
         className={cn(
-          'grid gap-6',
-          theatre ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[1.2fr_1fr]',
+          "grid gap-6",
+          theatre ? "grid-cols-1" : "grid-cols-1 lg:grid-cols-[1.2fr_1fr]",
         )}
       >
         {/* Player. The wrapper div is React-owned (so layout/styling
@@ -356,8 +411,8 @@ export function TranscriptViewer({
           </div>
           <p className="text-xs text-muted-foreground mt-2">
             {embedError
-              ? 'Inline playback isn’t available for this video, but the transcript and timestamps still work.'
-              : 'Click any line on the right to jump to that timestamp. The active line highlights as the video plays.'}
+              ? "Inline playback isn’t available for this video, but the transcript and timestamps still work."
+              : "Click any line on the right to jump to that timestamp. The active line highlights as the video plays."}
           </p>
         </div>
 
@@ -382,10 +437,18 @@ export function TranscriptViewer({
                     the menu's close animation, and works with keyboard
                     selection. `onClick` works too, but onSelect is the
                     documented path. */}
-                <DropdownMenuItem onSelect={() => download('txt')}>Export as TXT</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => download('srt')}>Export as SRT</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => download('vtt')}>Export as VTT</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => download('json')}>Export as JSON</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => download("txt")}>
+                  Export as TXT
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => download("srt")}>
+                  Export as SRT
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => download("vtt")}>
+                  Export as VTT
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => download("json")}>
+                  Export as JSON
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -406,8 +469,8 @@ export function TranscriptViewer({
 
             {onTranslateTargetChange && (
               <SearchableSelect
-                value={data.translated_to ?? 'none'}
-                onValueChange={(v) => onTranslateTargetChange(v === 'none' ? null : v)}
+                value={data.translated_to ?? "none"}
+                onValueChange={handleTranslateChange}
                 disabled={isRefetching}
                 // Same option list as the /new page — every language stays
                 // visible regardless of the source. Translating bn→bn is a
@@ -428,7 +491,9 @@ export function TranscriptViewer({
                   <span className="flex items-center gap-1">
                     <Languages className="h-3.5 w-3.5 text-muted-foreground" />
                     <span className="uppercase font-medium">
-                      {isRefetching ? '…' : (data.translated_to ?? data.original_language)}
+                      {isRefetching
+                        ? "…"
+                        : (data.translated_to ?? data.original_language)}
                     </span>
                   </span>
                 )}
@@ -466,8 +531,8 @@ export function TranscriptViewer({
                       segmentRefs.current[i] = el;
                     }}
                     className={cn(
-                      'flex gap-3 px-3 py-2 cursor-pointer hover:bg-accent/50 transition-colors',
-                      isActive && 'bg-accent border-l-2 border-l-foreground',
+                      "flex gap-3 px-3 py-2 cursor-pointer hover:bg-accent/50 transition-colors",
+                      isActive && "bg-accent border-l-2 border-l-foreground",
                     )}
                     onClick={() => onSegmentClick(seg.start)}
                   >
@@ -497,7 +562,10 @@ export function TranscriptViewer({
         <span>Credits used: {data.credits_used}</span>
         <span>Credits remaining: {data.credits_remaining}</span>
         <span className="ml-auto">
-          <Link href="/dashboard/transcripts/new" className="hover:text-foreground underline">
+          <Link
+            href="/dashboard/transcripts/new"
+            className="hover:text-foreground underline"
+          >
             Load another video
           </Link>
         </span>
@@ -529,10 +597,10 @@ function EmbedFallback({
   const thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const message = reason.removed
-    ? 'This video has been removed or made private on YouTube.'
+    ? "This video has been removed or made private on YouTube."
     : reason.embedDisabled
-      ? 'The video owner has disabled inline playback.'
-      : 'This video can’t be played inline.';
+      ? "The video owner has disabled inline playback."
+      : "This video can’t be played inline.";
 
   return (
     <div className="absolute inset-0 flex flex-col bg-zinc-900 text-zinc-100">

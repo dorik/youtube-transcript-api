@@ -1,8 +1,9 @@
-import type { FetchTranscriptAsUserInput, ListTranscriptsInput } from './types';
+import type { ListRequestsInput } from './types';
 
 export const transcriptsQueryKeys = {
   all: ['transcripts'] as const,
-  list: (input: ListTranscriptsInput) => [...transcriptsQueryKeys.all, 'list', input] as const,
-  detail: (input: FetchTranscriptAsUserInput) =>
-    [...transcriptsQueryKeys.all, 'detail', input] as const,
+  list: (input: ListRequestsInput) =>
+    [...transcriptsQueryKeys.all, 'list', input] as const,
+  detail: (id: string) => [...transcriptsQueryKeys.all, 'detail', id] as const,
+  batch: (id: string) => [...transcriptsQueryKeys.all, 'batch', id] as const,
 };
