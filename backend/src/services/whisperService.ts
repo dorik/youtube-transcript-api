@@ -8,7 +8,7 @@ import {config} from '../config/env';
 import {logger} from '../config/logger';
 import {UpgradeRequiredError} from '../utils/errors';
 import {Segment} from './formatters';
-import {mapYtDlpError, ytDlpNetworkArgs} from './youtubeService';
+import {withYtDlpRetry, ytDlpNetworkArgs} from './youtubeService';
 import {normalizeLanguageCode} from '../utils/languageCodes';
 
 const execFileAsync = promisify(execFile);
@@ -64,34 +64,35 @@ export async function transcribeWithWhisper(
 
 	try {
 		logger.info({videoId}, 'Whisper: extracting audio with yt-dlp');
-		try {
-			await execFileAsync(
-				'yt-dlp',
-				[
-					'-f',
-					'bestaudio',
-					'-x',
-					'--audio-format',
-					'mp3',
-					'--audio-quality',
-					'192K',
-					'-o',
-					audioPath,
-					// Apply the same proxy/cookie config as the caption path —
-					// otherwise the audio download still egresses from the bare
-					// server IP and hits YouTube's bot wall.
-					...ytDlpNetworkArgs(),
-					`https://www.youtube.com/watch?v=${videoId}`,
-				],
-				{timeout: 120_000},
-			);
-		} catch (err) {
-			logger.info({error: err}, 'billal');
-			// Route bot-challenges / video-removed / etc. through the shared
-			// mapper. Without this, the raw execFile rejection bubbled up to the
-			// express error handler as an opaque 500 ("Unhandled error").
-			throw mapYtDlpError(err, videoId, 'whisper-audio');
-		}
+		// withYtDlpRetry retries transient upstream failures (flaky residential
+		// proxy exit, bot challenge, timeout) on a fresh proxy IP and routes the
+		// final failure through the shared mapper — without it, a raw execFile
+		// rejection bubbled up to the express handler as an opaque 500.
+		await withYtDlpRetry(
+			() =>
+				execFileAsync(
+					'yt-dlp',
+					[
+						'-f',
+						'bestaudio',
+						'-x',
+						'--audio-format',
+						'mp3',
+						'--audio-quality',
+						'192K',
+						'-o',
+						audioPath,
+						// Apply the same proxy/cookie config as the caption path —
+						// otherwise the audio download still egresses from the bare
+						// server IP and hits YouTube's bot wall.
+						...ytDlpNetworkArgs(),
+						`https://www.youtube.com/watch?v=${videoId}`,
+					],
+					{timeout: 120_000},
+				),
+			videoId,
+			'whisper-audio',
+		);
 		logger.info({audioPath, exists: fs.existsSync(audioPath)}, 'billal');
 		const stat = fs.statSync(audioPath);
 		if (stat.size > 25 * 1024 * 1024) {

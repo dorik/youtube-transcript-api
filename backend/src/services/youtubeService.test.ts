@@ -19,6 +19,7 @@ import {
   fetchYouTubeMetadataStrict,
   mapYtDlpError,
   pickCaptionTrack,
+  withYtDlpRetry,
 } from './youtubeService';
 import {
   NoTranscriptError,
@@ -149,6 +150,55 @@ describe('mapYtDlpError', () => {
     );
     expect(err).toBeInstanceOf(UpstreamBlockedError);
     expect(err).not.toBeInstanceOf(NoTranscriptError);
+  });
+});
+
+describe('withYtDlpRetry', () => {
+  // A flaky residential-proxy exit dropping the TLS handshake — mapYtDlpError
+  // matches none of its permanent patterns, so it classifies as transient.
+  const sslFail = () =>
+    Promise.reject({
+      stderr:
+        'ERROR: Unable to download API page: [SSL: UNEXPECTED_EOF_WHILE_READING]',
+    });
+
+  it('returns the result without retrying when the first attempt succeeds', async () => {
+    const run = vi.fn().mockResolvedValue({ stdout: 'ok', stderr: '' });
+    await expect(withYtDlpRetry(run, 'vid')).resolves.toEqual({
+      stdout: 'ok',
+      stderr: '',
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a transient failure on a fresh attempt and then succeeds', async () => {
+    const run = vi
+      .fn()
+      .mockImplementationOnce(sslFail)
+      .mockResolvedValueOnce({ stdout: 'ok', stderr: '' });
+    await expect(withYtDlpRetry(run, 'vid')).resolves.toEqual({
+      stdout: 'ok',
+      stderr: '',
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after the attempt cap and throws UpstreamBlockedError', async () => {
+    const run = vi.fn().mockImplementation(sslFail);
+    await expect(withYtDlpRetry(run, 'vid')).rejects.toBeInstanceOf(
+      UpstreamBlockedError,
+    );
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it('never retries a permanent failure — a removed video fails on attempt 1', async () => {
+    const run = vi
+      .fn()
+      .mockRejectedValue({ stderr: 'ERROR: [youtube] vid: Video unavailable' });
+    await expect(withYtDlpRetry(run, 'vid')).rejects.toBeInstanceOf(
+      VideoNotFoundError,
+    );
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 
