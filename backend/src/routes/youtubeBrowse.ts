@@ -12,6 +12,7 @@ import {
   searchYouTube,
 } from '../services/youtubeBrowseService';
 import { PaymentRequiredError, ValidationError } from '../utils/errors';
+import { methodNotAllowed } from '../middleware/methodNotAllowed';
 
 export const youtubeBrowseRouter = Router();
 
@@ -206,6 +207,16 @@ youtubeBrowseRouter.get('/video/metadata', apiKeyAuth, rateLimit, async (req, re
     next(err);
   }
 });
+
+// 405 METHOD_NOT_ALLOWED for the discovery paths above. All are GET-only;
+// registered last so the GET handlers take precedence and only a wrong verb
+// falls through here instead of dropping to the global 404.
+youtubeBrowseRouter.all('/search', methodNotAllowed(['GET']));
+youtubeBrowseRouter.all('/channel/videos', methodNotAllowed(['GET']));
+youtubeBrowseRouter.all('/channel/search', methodNotAllowed(['GET']));
+youtubeBrowseRouter.all('/channel/latest', methodNotAllowed(['GET']));
+youtubeBrowseRouter.all('/playlist/videos', methodNotAllowed(['GET']));
+youtubeBrowseRouter.all('/video/metadata', methodNotAllowed(['GET']));
 
 /**
  * Reject 0-credit (or insufficient) users before we spend YouTube quota on

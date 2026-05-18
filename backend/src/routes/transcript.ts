@@ -6,6 +6,8 @@ import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
 import { expandBulkSource } from '../services/bulkExpansion';
+import { languageField, translateToField } from '../utils/languageFields';
+import { methodNotAllowed } from '../middleware/methodNotAllowed';
 
 /**
  * `/v1/transcript` — public, API-key-authed transcript queue.
@@ -27,9 +29,9 @@ const CreateSchema = z.object({
   format: z
     .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
     .default('json'),
-  language: z.string().min(2).max(10).optional(),
+  language: languageField,
   native_only: z.boolean().optional(),
-  translate_to: z.string().min(2).max(10).optional(),
+  translate_to: translateToField,
 });
 
 transcriptRouter.post(
@@ -88,9 +90,9 @@ const BulkSchema = z
     format: z
       .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
       .default('json'),
-    language: z.string().min(2).max(10).optional(),
+    language: languageField,
     native_only: z.boolean().optional(),
-    translate_to: z.string().min(2).max(10).optional(),
+    translate_to: translateToField,
     limit: z.coerce.number().int().min(1).max(svc.BATCH_VIDEO_CAP).default(50),
   })
   .superRefine((val, ctx) => {
@@ -183,3 +185,11 @@ transcriptRouter.get(
     }
   },
 );
+
+// 405 METHOD_NOT_ALLOWED for the paths above when the HTTP verb doesn't
+// match. Registered last so the method-specific handlers always win; only an
+// unsupported method falls through here instead of dropping to the global 404.
+transcriptRouter.all('/transcript', methodNotAllowed(['POST']));
+transcriptRouter.all('/transcript/:id', methodNotAllowed(['GET']));
+transcriptRouter.all('/transcripts/bulk', methodNotAllowed(['POST']));
+transcriptRouter.all('/transcripts/batches/:id', methodNotAllowed(['GET']));

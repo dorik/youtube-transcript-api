@@ -6,26 +6,57 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const SNIPPETS = {
-  curl: `curl 'https://api.youtubetranscripts.co/v1/transcript?url=https://youtu.be/dQw4w9WgXcQ' \\
+  curl: `# 1. Enqueue a transcript request
+curl -X POST 'https://yt-transcripts-api-v2.onrender.com/v1/transcript' \\
+  -H 'Authorization: Bearer yt_live_YOUR_KEY' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","format":"json"}'
+
+# Returns 202 with a queued request. Poll until status is "completed":
+curl 'https://yt-transcripts-api-v2.onrender.com/v1/transcript/REQUEST_ID' \\
   -H 'Authorization: Bearer yt_live_YOUR_KEY'`,
   node: `import axios from 'axios';
 
-const { data } = await axios.get(
-  'https://api.youtubetranscripts.co/v1/transcript',
-  {
-    params: { url: 'https://youtu.be/dQw4w9WgXcQ', format: 'json' },
-    headers: { Authorization: \`Bearer \${process.env.YT_API_KEY}\` },
-  },
-);
-console.log(data.transcript);`,
-  python: `import requests
+const api = axios.create({
+  baseURL: 'https://yt-transcripts-api-v2.onrender.com',
+  headers: { Authorization: \`Bearer \${process.env.YT_API_KEY}\` },
+});
 
-resp = requests.get(
-    "https://api.youtubetranscripts.co/v1/transcript",
-    params={"url": "https://youtu.be/dQw4w9WgXcQ"},
-    headers={"Authorization": f"Bearer {YT_API_KEY}"},
-)
-print(resp.json()["transcript"])`,
+// 1. Enqueue the request
+const { data: job } = await api.post('/v1/transcript', {
+  url: 'https://youtu.be/dQw4w9WgXcQ',
+  format: 'json',
+});
+
+// 2. Poll until the worker finishes
+let result = job;
+while (result.status === 'queued' || result.status === 'processing') {
+  await new Promise((r) => setTimeout(r, 1500));
+  ({ data: result } = await api.get(\`/v1/transcript/\${job.id}\`));
+}
+console.log(result.result.transcript);`,
+  python: `import os, time, requests
+
+API = "https://yt-transcripts-api-v2.onrender.com"
+headers = {"Authorization": f"Bearer {os.environ['YT_API_KEY']}"}
+
+# 1. Enqueue the request
+job = requests.post(
+    f"{API}/v1/transcript",
+    json={"url": "https://youtu.be/dQw4w9WgXcQ", "format": "json"},
+    headers=headers,
+    timeout=15,
+).json()
+
+# 2. Poll until the worker finishes
+result = job
+while result["status"] in ("queued", "processing"):
+    time.sleep(1.5)
+    result = requests.get(
+        f"{API}/v1/transcript/{job['id']}", headers=headers, timeout=15
+    ).json()
+
+print(result["result"]["transcript"])`,
 };
 
 const FEATURES = [
@@ -90,7 +121,7 @@ export default function HomePage() {
           <Card className="bg-zinc-950 text-zinc-100 border-zinc-800 overflow-hidden">
             <CardHeader className="border-b border-zinc-800">
               <CardTitle className="text-base font-medium text-zinc-200">
-                One request, full transcript
+                Enqueue a job, poll for the transcript
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">

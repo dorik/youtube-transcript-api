@@ -90,6 +90,24 @@ export class UpgradeRequiredError extends ApiError {
   }
 }
 
+/**
+ * The path exists but not for the HTTP method the client used. The route
+ * layer sets an `Allow` header listing the supported methods before this is
+ * thrown — surfacing 405 instead of a generic 404 tells the caller the
+ * endpoint is real and they just used the wrong verb.
+ */
+export class MethodNotAllowedError extends ApiError {
+  constructor(allowedMethods: string[]) {
+    super(
+      405,
+      'METHOD_NOT_ALLOWED',
+      'method_not_allowed',
+      `This endpoint does not support that HTTP method. Allowed: ${allowedMethods.join(', ')}.`,
+      { allowed_methods: allowedMethods },
+    );
+  }
+}
+
 export class RateLimitError extends ApiError {
   constructor(retryAfterSeconds: number) {
     super(

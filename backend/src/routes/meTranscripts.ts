@@ -5,6 +5,7 @@ import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
 import { expandBulkSource } from '../services/bulkExpansion';
+import { languageField, translateToField } from '../utils/languageFields';
 
 /**
  * `/me/transcripts` — cookie-authed async transcript queue for the dashboard.
@@ -28,9 +29,9 @@ const CreateSchema = z.object({
   format: z
     .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
     .default('json'),
-  language: z.string().min(2).max(10).optional(),
+  language: languageField,
   native_only: z.boolean().optional(),
-  translate_to: z.string().min(2).max(10).optional(),
+  translate_to: translateToField,
 });
 
 meTranscriptsRouter.post('/', async (req, res, next) => {
@@ -83,9 +84,9 @@ const BulkSchema = z
     format: z
       .enum(VALID_FORMATS as [OutputFormat, ...OutputFormat[]])
       .default('json'),
-    language: z.string().min(2).max(10).optional(),
+    language: languageField,
     native_only: z.boolean().optional(),
-    translate_to: z.string().min(2).max(10).optional(),
+    translate_to: translateToField,
     limit: z.coerce.number().int().min(1).max(svc.BATCH_VIDEO_CAP).default(50),
   })
   .superRefine((val, ctx) => {

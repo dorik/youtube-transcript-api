@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeLanguageCode } from './languageCodes';
+import {
+  isSupportedLanguageCode,
+  normalizeLanguageCode,
+} from './languageCodes';
 
 describe('normalizeLanguageCode', () => {
   it('passes through canonical codes unchanged', () => {
@@ -58,5 +61,31 @@ describe('normalizeLanguageCode', () => {
     expect(normalizeLanguageCode('Klingon')).toBe(
       normalizeLanguageCode('KLINGON'),
     );
+  });
+});
+
+describe('isSupportedLanguageCode', () => {
+  it('accepts canonical codes and their normalizable forms', () => {
+    expect(isSupportedLanguageCode('en')).toBe(true);
+    expect(isSupportedLanguageCode('EN')).toBe(true);
+    expect(isSupportedLanguageCode('english')).toBe(true);
+    expect(isSupportedLanguageCode('en-US')).toBe(true); // collapses to en
+    expect(isSupportedLanguageCode('zh-TW')).toBe(true);
+  });
+
+  it('rejects unsupported codes — the bug: zzzz used to flow through', () => {
+    expect(isSupportedLanguageCode('zzzz')).toBe(false);
+    expect(isSupportedLanguageCode('klingon')).toBe(false);
+  });
+
+  it('rejects sentinels — callers allow auto/none explicitly where valid', () => {
+    expect(isSupportedLanguageCode('auto')).toBe(false);
+    expect(isSupportedLanguageCode('none')).toBe(false);
+  });
+
+  it('rejects empty / missing input', () => {
+    expect(isSupportedLanguageCode('')).toBe(false);
+    expect(isSupportedLanguageCode(null)).toBe(false);
+    expect(isSupportedLanguageCode(undefined)).toBe(false);
   });
 });

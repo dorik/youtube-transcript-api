@@ -142,3 +142,20 @@ export function normalizeLanguageCode(
   // compare equal and stay visible in logs.
   return lower;
 }
+
+/**
+ * True when `input` resolves to a language code this API actually supports.
+ *
+ * Normalizes first, so `English`, `EN`, and `en-US` all count as `en`.
+ * The sentinels `auto` / `none` are deliberately NOT supported codes — the
+ * request-schema layer allows those explicitly where they're meaningful.
+ *
+ * Used to reject bad `language` / `translate_to` values at request time with
+ * a 400 VALIDATION_ERROR, instead of letting e.g. `zzzz` flow downstream and
+ * blow up the translator with an opaque 500.
+ */
+export function isSupportedLanguageCode(
+  input: string | null | undefined,
+): boolean {
+  return SUPPORTED_CODES.has(normalizeLanguageCode(input));
+}
