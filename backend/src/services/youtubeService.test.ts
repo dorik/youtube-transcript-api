@@ -18,6 +18,7 @@ import {
   fetchYouTubeMetadata,
   fetchYouTubeMetadataStrict,
   mapYtDlpError,
+  pickCaptionTrack,
 } from './youtubeService';
 import {
   NoTranscriptError,
@@ -148,5 +149,40 @@ describe('mapYtDlpError', () => {
     );
     expect(err).toBeInstanceOf(UpstreamBlockedError);
     expect(err).not.toBeInstanceOf(NoTranscriptError);
+  });
+});
+
+describe('pickCaptionTrack', () => {
+  // Mirrors yt-dlp's real `automatic_captions` shape: ~150 machine-TRANSLATED
+  // variants — whose timed-text URL carries `tlang=` — keyed by bare target
+  // code and listed alphabetically AHEAD of the genuine source-language track.
+  // Regression for video AtnMG_40604, where the translated `ab` (Abkhazian)
+  // track was picked and YouTube 429'd the translate endpoint.
+  const TT = 'https://www.youtube.com/api/timedtext?v=vid&fmt=json3';
+  const json3 = (url: string) => [{ ext: 'json3', url }];
+  const dump = {
+    id: 'vid',
+    subtitles: {},
+    automatic_captions: {
+      ab: json3(`${TT}&lang=bn&tlang=ab`),
+      aa: json3(`${TT}&lang=bn&tlang=aa`),
+      'bn-orig': json3(`${TT}&lang=bn`),
+      bn: json3(`${TT}&lang=bn`),
+      en: json3(`${TT}&lang=bn&tlang=en`),
+    },
+  };
+
+  it('skips machine-translated tracks and picks the genuine source track', () => {
+    const pick = pickCaptionTrack(dump, undefined);
+    expect(pick).not.toBeNull();
+    expect(pick!.url).not.toMatch(/tlang=/);
+  });
+
+  it('falls back to a genuine track when the requested language exists only as a translation target', () => {
+    // `en` is present only as a bn->en translation; picking it would fetch the
+    // rate-limited translate endpoint. Must fall through to a genuine track.
+    const pick = pickCaptionTrack(dump, 'en');
+    expect(pick).not.toBeNull();
+    expect(pick!.url).not.toMatch(/tlang=/);
   });
 });

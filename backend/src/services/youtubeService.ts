@@ -221,17 +221,17 @@ interface PickedTrack {
  *     for `en` on a Bangla-only video gets Bangla rather than nothing).
  *  4. Any genuine auto-generated track.
  *
- * Auto-translated variants (e.g. `en-fr` = English caption auto-translated
- * from French) are deliberately excluded — they're machine translations
- * layered on top of machine recognition, and the resulting quality is
- * worse than serving the source-language track directly.
+ * Machine-translated variants are stripped from both catalogs up front (see
+ * `stripTranslatedTracks`), so none of the steps above can select one —
+ * they're a low-quality MT cascade and YouTube rate-limits the endpoint that
+ * serves them (HTTP 429).
  */
-function pickCaptionTrack(
+export function pickCaptionTrack(
 	dump: YtDlpDump,
 	requestedLang: string | undefined,
 ): PickedTrack | null {
-	const manual = dump.subtitles ?? {};
-	const auto = dump.automatic_captions ?? {};
+	const manual = stripTranslatedTracks(dump.subtitles ?? {});
+	const auto = stripTranslatedTracks(dump.automatic_captions ?? {});
 
 	return (
 		pickByLang(manual, requestedLang, 'manual') ??
@@ -257,11 +257,10 @@ function pickByLang(
 	}
 
 	// Then a region-stripped match (e.g. requested `en`, catalog has `en-US`,
-	// or vice versa). Skip auto-translated variants when matching by prefix.
+	// or vice versa). Translated tracks were already removed by the caller.
 	const requestedBase = lang.split(/[-_]/)[0];
 	const prefix = keys.find(
-		(k) =>
-			!isAutoTranslatedVariant(k) && k.split(/[-_]/)[0] === requestedBase,
+		(k) => k.split(/[-_]/)[0] === requestedBase,
 	);
 	if (prefix) {
 		const url = trackUrl(catalog[prefix]);
@@ -276,7 +275,6 @@ function pickAny(
 	source: 'manual' | 'auto',
 ): PickedTrack | null {
 	for (const [lang, tracks] of Object.entries(catalog)) {
-		if (isAutoTranslatedVariant(lang)) continue;
 		const url = trackUrl(tracks);
 		if (url) return {lang, url, source};
 	}
@@ -284,14 +282,38 @@ function pickAny(
 }
 
 /**
- * YouTube exposes auto-translation by listing keys like `en-fr`, `en-de`,
- * one for every UI translation target. The pattern is two lowercase letters
- * + dash + two lowercase letters. Genuine region tags (`en-US`, `pt-BR`)
- * use uppercase, and the original-language marker (`en-orig`) uses a longer
- * suffix, so neither is matched here.
+ * Drop machine-translated caption tracks from a yt-dlp catalog.
+ *
+ * `automatic_captions` lists, for every video, ~150 auto-TRANSLATED variants
+ * (YouTube will translate any caption into any UI language) alongside the
+ * genuine source-language track(s). We never want a translated one: the
+ * content is a low-quality MT cascade, and — critically — YouTube rate-limits
+ * the timed-text *translation* endpoint hard, returning HTTP 429 where the
+ * plain caption fetch returns 200.
+ *
+ * The reliable, yt-dlp-version-proof signal is the track URL: a genuine track
+ * carries only `lang=`; a translated one additionally carries `tlang=`. We do
+ * NOT key off the catalog *key* — yt-dlp names translation entries with bare
+ * target codes (`ab`, `aa`, `af`, ...), indistinguishable by name from a
+ * genuine track's key (which is why the previous `xx-yy` regex never matched
+ * them, and every `auto` request silently fetched the Abkhazian translation).
  */
-function isAutoTranslatedVariant(lang: string): boolean {
-	return /^[a-z]{2}-[a-z]{2}$/.test(lang);
+function stripTranslatedTracks(
+	catalog: Record<string, YtDlpCaptionTrack[]>,
+): Record<string, YtDlpCaptionTrack[]> {
+	const out: Record<string, YtDlpCaptionTrack[]> = {};
+	for (const [lang, tracks] of Object.entries(catalog)) {
+		const genuine = (tracks ?? []).filter(
+			(t) => !isTranslatedTrackUrl(t.url),
+		);
+		if (genuine.length) out[lang] = genuine;
+	}
+	return out;
+}
+
+/** True when a timed-text URL requests an on-the-fly translation (`tlang=`). */
+function isTranslatedTrackUrl(url: string): boolean {
+	return /[?&]tlang=/.test(url);
 }
 
 /**
