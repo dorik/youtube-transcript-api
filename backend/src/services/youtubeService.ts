@@ -191,18 +191,18 @@ async function dumpVideoInfo(videoId: string): Promise<YtDlpDump> {
     ...ytDlpNetworkArgs(),
   ];
 
-  let stdout: string;
-  try {
-    const result = await execFileAsync("yt-dlp", args, {
-      timeout: 30_000,
-      // The dump can be large for popular videos (hundreds of auto-translated
-      // caption entries, full chapter list, etc.). 50 MB is plenty.
-      maxBuffer: 50 * 1024 * 1024,
-    });
-    stdout = result.stdout;
-  } catch (err) {
-    throw mapYtDlpError(err, videoId);
-  }
+  // Retries transient upstream failures (flaky residential proxy exit, bot
+  // challenge, timeout) on a fresh proxy IP; throws the mapped domain error.
+  const { stdout } = await withYtDlpRetry(
+    () =>
+      execFileAsync("yt-dlp", args, {
+        timeout: 30_000,
+        // The dump can be large for popular videos (hundreds of auto-translated
+        // caption entries, full chapter list, etc.). 50 MB is plenty.
+        maxBuffer: 50 * 1024 * 1024,
+      }),
+    videoId,
+  );
 
   try {
     return JSON.parse(stdout) as YtDlpDump;
@@ -573,6 +573,58 @@ function isExecError(
     err !== null &&
     ("stderr" in err || "code" in err)
   );
+}
+
+// ── yt-dlp transient-failure retry ──────────────────────────────────────────
+
+/** Total yt-dlp attempts (1 initial + retries) before a transient failure is surfaced. */
+const YTDLP_MAX_ATTEMPTS = 3;
+/** Base inter-attempt delay; the Nth retry waits `BASE * N`. */
+const YTDLP_RETRY_BASE_MS = 400;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Run a yt-dlp invocation, retrying transient upstream failures.
+ *
+ * The proxy is a rotating-residential endpoint: every fresh yt-dlp process
+ * egresses through a *different* residential exit IP. So when one exit node
+ * drops the TLS handshake (`SSL: UNEXPECTED_EOF`, connection reset), times
+ * out, or gets served a bot challenge, an immediate retry lands on a new IP
+ * and usually succeeds — without waiting for the whole BullMQ job to retry.
+ *
+ * Only failures `mapYtDlpError` classifies as transient
+ * (`UpstreamBlockedError`) are retried. A permanent `VideoNotFoundError`
+ * (video removed / private / nonexistent) never improves on retry, so it is
+ * surfaced on the first attempt. The error thrown is always the mapped
+ * domain error, exactly as the direct call site used to throw.
+ */
+export async function withYtDlpRetry<T>(
+  run: () => Promise<T>,
+  videoId: string,
+  context: "captions" | "whisper-audio" = "captions",
+): Promise<T> {
+  let lastError: Error = new UpstreamBlockedError(60);
+  for (let attempt = 1; attempt <= YTDLP_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      const mapped = mapYtDlpError(err, videoId, context);
+      // Permanent failure — retrying a different IP cannot bring a removed
+      // or private video back. Surface it immediately.
+      if (!(mapped instanceof UpstreamBlockedError)) throw mapped;
+      lastError = mapped;
+      if (attempt < YTDLP_MAX_ATTEMPTS) {
+        logger.warn(
+          { videoId, context, attempt, maxAttempts: YTDLP_MAX_ATTEMPTS },
+          "yt-dlp transient failure; retrying on a fresh proxy IP",
+        );
+        await delay(YTDLP_RETRY_BASE_MS * attempt);
+      }
+    }
+  }
+  throw lastError;
 }
 
 // ── Concurrency limiter ─────────────────────────────────────────────────────
