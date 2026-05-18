@@ -7,6 +7,7 @@ import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
 import { expandBulkSource } from '../services/bulkExpansion';
 import { languageField, translateToField } from '../utils/languageFields';
+import { zodValidationDetails } from '../utils/zodError';
 import { methodNotAllowed } from '../middleware/methodNotAllowed';
 
 /**
@@ -42,9 +43,10 @@ transcriptRouter.post(
     try {
       const parsed = CreateSchema.safeParse(req.body);
       if (!parsed.success) {
-        throw new ValidationError('Invalid request body', {
-          issues: parsed.error.flatten().fieldErrors,
-        });
+        throw new ValidationError(
+          'Invalid request body',
+          zodValidationDetails(parsed.error),
+        );
       }
       const row = await svc.enqueueSingleRequest({
         userId: req.user!.id,
@@ -128,9 +130,10 @@ transcriptRouter.post(
     try {
       const parsed = BulkSchema.safeParse(req.body);
       if (!parsed.success) {
-        throw new ValidationError('Invalid request body', {
-          issues: parsed.error.flatten().fieldErrors,
-        });
+        throw new ValidationError(
+          'Invalid request body',
+          zodValidationDetails(parsed.error),
+        );
       }
       const data = parsed.data;
       const { kind, sourceUrl, label, videos } = await expandBulkSource({

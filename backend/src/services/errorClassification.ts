@@ -1,4 +1,6 @@
+import { UnrecoverableError } from 'bullmq';
 import {
+  ApiError,
   NoTranscriptError,
   UpgradeRequiredError,
   ValidationError,
@@ -34,4 +36,39 @@ export function classifyError(err: unknown): ErrorKind {
     return 'transient';
   }
   return 'transient';
+}
+
+export interface FailureCode {
+  code: string;
+  status: number;
+}
+
+/**
+ * Derive the `{ code, status }` a failed transcript job should be recorded
+ * under, from whatever error the worker caught.
+ *
+ * The worker re-throws permanent failures as a BullMQ `UnrecoverableError`
+ * to stop retries — but that wrapper would otherwise erase the original
+ * `ApiError.code`, leaving every permanent failure recorded as a generic
+ * `PERMANENT_FAILURE`. `processTranscribe` copies `code`/`status` onto the
+ * wrapper before throwing; this reads them back so a missing video surfaces
+ * as `VIDEO_NOT_FOUND` (404), a captionless one as `NO_TRANSCRIPT`, etc.
+ */
+export function resolveFailureCode(err: unknown): FailureCode {
+  if (err instanceof ApiError) {
+    return { code: err.code, status: err.status };
+  }
+  if (err !== null && typeof err === 'object') {
+    const carrier = err as { code?: unknown; status?: unknown };
+    if (typeof carrier.code === 'string') {
+      return {
+        code: carrier.code,
+        status: typeof carrier.status === 'number' ? carrier.status : 500,
+      };
+    }
+  }
+  if (err instanceof UnrecoverableError) {
+    return { code: 'PERMANENT_FAILURE', status: 500 };
+  }
+  return { code: 'INTERNAL_ERROR', status: 500 };
 }

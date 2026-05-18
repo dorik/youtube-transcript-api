@@ -11,7 +11,7 @@ import { config } from '../config/env';
 import { logger } from '../config/logger';
 import { getTranscript } from '../services/transcriptService';
 import { fetchYouTubeMetadata } from '../services/youtubeService';
-import { classifyError } from '../services/errorClassification';
+import { classifyError, resolveFailureCode } from '../services/errorClassification';
 import { ApiError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
 
@@ -118,7 +118,16 @@ async function processTranscribe(job: Job<TranscriptJobData>): Promise<void> {
     // attempt — so retries in between leave the row as `processing`.
     if (classifyError(err) === 'permanent') {
       const message = err instanceof Error ? err.message : 'Unknown error';
-      throw new UnrecoverableError(message);
+      // Re-throw as UnrecoverableError so BullMQ stops retrying, but copy the
+      // original ApiError code/status onto it first. The worker's in-process
+      // `failed` listener receives this exact instance, so `resolveFailureCode`
+      // can record the precise failure (VIDEO_NOT_FOUND, NO_TRANSCRIPT, …)
+      // instead of a generic PERMANENT_FAILURE.
+      const unrecoverable = new UnrecoverableError(message);
+      if (err instanceof ApiError) {
+        Object.assign(unrecoverable, { code: err.code, status: err.status });
+      }
+      throw unrecoverable;
     }
     logger.warn(
       { err, requestId, attempt },
@@ -174,18 +183,13 @@ export async function startWorker(): Promise<void> {
       if (!req || req.status === 'canceled' || req.status === 'completed') {
         return;
       }
-      const code =
-        err instanceof ApiError
-          ? err.code
-          : err instanceof UnrecoverableError
-            ? 'PERMANENT_FAILURE'
-            : 'INTERNAL_ERROR';
+      const { code, status } = resolveFailureCode(err);
       const message = err?.message ?? 'Unknown error';
       await svc.markFailed(requestId, code, message);
       await svc.logApiRequest({
         userId: req.user_id,
         endpoint: req.source === 'api' ? '/v1/transcript' : '/me/transcripts',
-        statusCode: err instanceof ApiError ? err.status : 500,
+        statusCode: status,
         videoId: req.video_id,
         format: req.request.format,
         language: req.request.language ?? null,

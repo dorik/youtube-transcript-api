@@ -100,6 +100,8 @@ const ERROR_CODES: Array<{ code: string; status: number; meaning: string }> = [
   { code: 'INSUFFICIENT_CREDITS', status: 402, meaning: 'Account is out of credits for this billing cycle.' },
   { code: 'NO_TRANSCRIPT', status: 404, meaning: 'Video has no captions and the Whisper fallback also produced nothing.' },
   { code: 'VIDEO_NOT_FOUND', status: 404, meaning: 'Video does not exist or is private/removed.' },
+  { code: 'NOT_FOUND', status: 404, meaning: 'The transcript request or batch id does not exist (or is not yours).' },
+  { code: 'ROUTE_NOT_FOUND', status: 404, meaning: 'The URL path does not match any API endpoint.' },
   { code: 'RATE_LIMIT_EXCEEDED', status: 429, meaning: 'You exceeded your per-minute request limit.' },
   { code: 'UPSTREAM_BLOCKED', status: 503, meaning: 'YouTube is temporarily blocking our servers. Retry shortly.' },
 ];
@@ -189,20 +191,29 @@ export default function DocsPage() {
               { name: 'GET /v1/transcripts/batches/:id', type: '(batch id in path)', required: true, description: 'Poll a bulk batch — its progress counts and per-video request rows.' },
             ]}
           />
+          <p className="text-sm">
+            <code>GET /v1/search</code> accepts a <code>type</code> of{' '}
+            <code>video</code> (the default), <code>channel</code>,{' '}
+            <code>playlist</code>, or <code>all</code>. <code>limit</code>{' '}
+            defaults to 10 and is capped at 50 on every listing endpoint.
+          </p>
         </Section>
 
         <Section id="formats" title="Output formats">
           <p>
-            Pass <code>format=&lt;value&gt;</code> to control the response body. JSON is the
-            default; the others return the raw transcript with the appropriate
-            <code> Content-Type</code> for direct use as a file.
+            Pass <code>format</code> in the request body to control how the
+            transcript is rendered. Every response is the JSON envelope shown
+            above (<code>Content-Type: application/json</code>) — <code>format</code>{' '}
+            changes the string inside <code>result.transcript</code>, not the
+            response type. Write that string to a file yourself if you need a
+            standalone subtitle file.
           </p>
           <ul className="text-sm space-y-1">
-            <li><code>json</code> — full envelope with title, segments, credits info.</li>
+            <li><code>json</code> — <code>result.transcript</code> is plain text; a structured <code>segments</code> array is included alongside it.</li>
             <li><code>text</code> — plain text only, no timestamps.</li>
             <li><code>text-timestamps</code> — plain text prefixed with <code>[mm:ss]</code> per line.</li>
-            <li><code>srt</code> — SubRip subtitles (Content-Type: <code>application/x-subrip</code>).</li>
-            <li><code>vtt</code> — WebVTT (Content-Type: <code>text/vtt</code>).</li>
+            <li><code>srt</code> — <code>result.transcript</code> holds SubRip-formatted subtitles.</li>
+            <li><code>vtt</code> — <code>result.transcript</code> holds WebVTT-formatted subtitles.</li>
           </ul>
         </Section>
 
