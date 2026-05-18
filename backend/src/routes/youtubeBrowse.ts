@@ -44,9 +44,17 @@ youtubeBrowseRouter.get('/search', apiKeyAuth, rateLimit, async (req, res, next)
       type: parsed.data.type,
       limit: parsed.data.limit,
     });
-    await chargeBrowseCredit(req.user!.id, 'youtube_search', 1, { query, type: parsed.data.type });
-    void logBrowseRequest(req.user!.id, req.apiKeyId ?? null, '/v1/search', 1);
-    res.json({ ...result, credits_used: 1 });
+    // Search is billed as a flat 1-credit request (it returns a mix of
+    // videos/channels/playlists, not a per-video listing — see the note
+    // above). But a search that returns ZERO results delivered nothing, so
+    // it costs nothing: never charge for an empty result set.
+    const credits = result.items.length > 0 ? 1 : 0;
+    await chargeBrowseCredit(req.user!.id, 'youtube_search', credits, {
+      query,
+      type: parsed.data.type,
+    });
+    void logBrowseRequest(req.user!.id, req.apiKeyId ?? null, '/v1/search', credits);
+    res.json({ ...result, credits_used: credits });
   } catch (err) {
     next(err);
   }

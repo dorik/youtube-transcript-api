@@ -116,9 +116,37 @@ export async function listChannelVideos(input: {
     ...mapValid(collectVideoRenderers(initialData), videoFromRenderer),
     ...mapValid(collectLockupVideoViewModels(initialData), videoFromLockup),
   ]);
+  // The lockupViewModel layout (now the default on most channel pages) carries
+  // no per-row channel name/id, so videoFromLockup leaves both null. The
+  // channel page itself knows them — backfill from its channelMetadataRenderer
+  // header so every item is enriched consistently regardless of which grid
+  // layout YouTube served (bug L4).
+  const identity = extractChannelIdentity(initialData);
+  const enriched = items.map((item) => ({
+    ...item,
+    channel: item.channel ?? identity.name,
+    channel_id: item.channel_id ?? identity.id,
+  }));
   return {
     channel: input.channel,
-    items: items.slice(0, input.limit),
+    items: enriched.slice(0, input.limit),
+  };
+}
+
+/**
+ * Read a channel page's own identity (display name + UC… id) from its
+ * `channelMetadataRenderer` header. Used to backfill per-row channel info on
+ * layouts (lockupViewModel) that omit it.
+ */
+function extractChannelIdentity(root: unknown): {
+  name: string | null;
+  id: string | null;
+} {
+  const meta = collectObjects(root, 'channelMetadataRenderer')[0];
+  if (!meta) return { name: null, id: null };
+  return {
+    name: typeof meta.title === 'string' ? meta.title : null,
+    id: typeof meta.externalId === 'string' ? meta.externalId : null,
   };
 }
 
@@ -436,14 +464,40 @@ function videoFromLockup(lockup: Record<string, unknown>): BrowseVideo {
 
 function channelFromRenderer(renderer: Record<string, unknown>): BrowseChannel {
   const channelId = stringProp(renderer, 'channelId');
+  // Modern `channelRenderer` populates `subscriberCountText` with the
+  // "@handle" string and carries the real "N subscribers" string in
+  // `videoCountText`. Older renderers put the subscriber count in
+  // `subscriberCountText` directly. Detect an @handle to tell them apart so
+  // `handle` and `subscriber_count_text` are never swapped (bug L1).
+  const subText = textProp(renderer, 'subscriberCountText');
+  const subTextIsHandle = !!subText && subText.startsWith('@');
   return {
     channel_id: channelId,
     url: `https://www.youtube.com/channel/${channelId}`,
     title: textProp(renderer, 'title') || 'Untitled',
-    handle: textProp(renderer, 'navigationEndpoint'),
-    subscriber_count_text: textProp(renderer, 'subscriberCountText'),
+    handle: channelHandle(renderer) ?? (subTextIsHandle ? subText : null),
+    subscriber_count_text: subTextIsHandle
+      ? textProp(renderer, 'videoCountText')
+      : subText,
     thumbnail_url: thumbnailUrl(renderer),
   };
+}
+
+/**
+ * Extract a channel's "@handle" from a `channelRenderer`. The real handle
+ * lives at `navigationEndpoint.browseEndpoint.canonicalBaseUrl` as a
+ * "/@Handle" path — `textProp` can't reach it because `navigationEndpoint` is
+ * a nested object, not a text node. Returns null when no canonical @-URL is
+ * present (older channels expose only a `/channel/UC…` URL).
+ */
+function channelHandle(renderer: Record<string, unknown>): string | null {
+  const endpoint = renderer.navigationEndpoint;
+  const browse = isRecord(endpoint) ? endpoint.browseEndpoint : null;
+  const canonical = isRecord(browse) ? browse.canonicalBaseUrl : null;
+  if (typeof canonical === 'string' && canonical.startsWith('/@')) {
+    return canonical.slice(1); // "/@Handle" -> "@Handle"
+  }
+  return null;
 }
 
 function playlistFromRenderer(renderer: Record<string, unknown>): BrowsePlaylist {

@@ -198,6 +198,15 @@ export async function getTranscript(
 		}
 	}
 
+	// The true source-language transcript, captured BEFORE the
+	// native-in-target branch below can reassign `original` to a
+	// target-language payload. `original_language` / `translated_to` in the
+	// response must describe this real source, not whichever internal path
+	// (MT, native-in-target, or Whisper-in-target) we ended up taking.
+	const sourceLanguage = original.language;
+	const sourceTranscript = original.transcript;
+	const sourceSegments = original.segments;
+
 	// 2. Decide whether the user wants a language different from what we have.
 	//    Skip when target matches source — no point spending an LLM call to
 	//    translate Bangla to Bangla.
@@ -240,14 +249,20 @@ export async function getTranscript(
 			);
 
 			if (nativeInTarget) {
-				// Treat the native-target captions as the response's "original" —
-				// no translation happened, so the response's original_language,
-				// language and translated_to should all reflect that.
+				// We sourced captions/Whisper directly in the target language
+				// instead of machine-translating. From the caller's point of
+				// view that is still a language change: they asked for
+				// `translate_to` and got a transcript in a language other than
+				// the video's source. Report it as a translation whenever the
+				// served language differs from the true source language, so
+				// `original_language` and `translated_to` honestly describe the
+				// request rather than our internal path (bug M1). Only when the
+				// served language equals the source is it genuinely untranslated.
 				displaySegments = nativeInTarget.payload.segments;
 				displayTranscript = nativeInTarget.payload.transcript;
 				displayLanguage = nativeInTarget.payload.language;
 				original = nativeInTarget.payload;
-				actuallyTranslated = false;
+				actuallyTranslated = displayLanguage !== sourceLanguage;
 
 				if (!nativeInTarget.fromCache) {
 					// Fresh fetch in the target language. Cost is rolled into
@@ -332,7 +347,7 @@ export async function getTranscript(
 			source: original.source,
 			durationSeconds: original.durationSeconds,
 			metadata: actuallyTranslated
-				? {translated_to: translateTo, from: original.language}
+				? {translated_to: translateTo, from: sourceLanguage}
 				: undefined,
 		});
 	}
@@ -355,13 +370,17 @@ export async function getTranscript(
 		creditsUsed,
 		creditsRemaining: finalState.balance,
 		displayLanguage,
-		originalLanguage: original.language,
-		// `translated_to` and the toggle payload are only meaningful when we
-		// actually machine-translated. When YouTube had real captions in the
-		// target language, we treat that as the response's native original.
+		// Always the true source language — never the target, even when we
+		// served native/Whisper captions in the target language (bug M1).
+		originalLanguage: sourceLanguage,
+		// `translated_to` and the toggle payload are populated whenever the
+		// response's language differs from the source — whether produced by
+		// machine translation or by sourcing native/Whisper captions in the
+		// target language. The toggle carries the captured source-language
+		// transcript so the viewer can flip Original ⇄ Translated.
 		translatedTo: actuallyTranslated ? translateTo! : null,
 		originalForToggle: actuallyTranslated
-			? {transcript: original.transcript, segments: original.segments}
+			? {transcript: sourceTranscript, segments: sourceSegments}
 			: null,
 	});
 }

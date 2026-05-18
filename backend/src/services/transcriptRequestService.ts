@@ -145,6 +145,13 @@ export async function countPendingRequests(userId: string): Promise<number> {
  * Find a non-failed, non-canceled request for the same user + video + params,
  * newest first. Used for de-dup: a queued/processing match prevents duplicate
  * work; a completed match is an instant, free re-serve.
+ *
+ * A `completed` row is only a valid match when it actually carries a
+ * `result` — a `completed` row with `result IS NULL` is corrupt (it can
+ * never be served) and must never be re-served, or it poisons every future
+ * request for that video. Such rows should not exist anymore (see the
+ * `enqueueBatch` fix + the migration-014 CHECK constraint); the guard here
+ * is defense-in-depth for any that predate the fix.
  */
 export async function findDuplicateRequest(
   userId: string,
@@ -156,6 +163,7 @@ export async function findDuplicateRequest(
      WHERE user_id = $1
        AND video_id = $2
        AND status IN ('queued', 'processing', 'completed')
+       AND (status <> 'completed' OR result IS NOT NULL)
        AND request->>'format' = $3
        AND COALESCE(request->>'language', '') = $4
        AND COALESCE(request->>'translate_to', '') = $5
@@ -569,6 +577,8 @@ export interface BatchVideoInput {
 
 export interface EnqueueBatchInput {
   userId: string;
+  /** Where the bulk request came in: the public API key or the dashboard. */
+  source: 'api' | 'dashboard';
   kind: 'playlist' | 'channel' | 'videos';
   sourceUrl: string | null;
   label: string | null;
@@ -582,10 +592,19 @@ export interface EnqueueBatchResult {
 }
 
 /**
- * Expand a bulk submission into one batch + one row per video. Videos already
- * cached for the requested params are inserted directly as `completed` (0
- * credits, no queue job); the rest are queued. The whole batch is rejected if
- * the user cannot afford every uncached video.
+ * Expand a bulk submission into one batch + one row per video.
+ *
+ * EVERY row — cache hit or not — is inserted `queued` and gets a worker job.
+ * The worker's `getTranscript()` already serves a cache hit correctly: it
+ * returns the cached transcript at 0 credits with proper format rendering and
+ * translation, then `markCompleted()` writes the `result`. Inserting a cache
+ * hit directly as `completed` (the old behavior) skipped `result`, format
+ * and `translate_to` resolution entirely — the row was born `completed` with
+ * `result: null` and could never be served (bug C1).
+ *
+ * The cache pre-check below is still performed, but ONLY to size the credit
+ * gate: cached videos cost 0 credits, so the batch is rejected only if the
+ * user cannot afford every *uncached* video.
  */
 export async function enqueueBatch(
   input: EnqueueBatchInput,
@@ -662,18 +681,19 @@ export async function enqueueBatch(
     for (let i = 0; i < input.videos.length; i++) {
       const v = input.videos[i];
       const cfg: TranscriptRequestConfig = { ...input.config, url: v.url };
-      const status: RequestStatus = cachedFlags[i] ? 'completed' : 'queued';
+      // Always `queued` — including cache hits. The worker resolves the cache
+      // hit (full result, 0 credits, correct format + translation) and calls
+      // markCompleted(). See the function doc-comment for why a cache hit must
+      // never be short-cut straight to `completed` here.
       const { rows } = await client.query<TranscriptRequestRow>(
         `INSERT INTO transcript_requests
            (user_id, source, status, request, video_id, title, channel,
-            duration_seconds, thumbnail_url, batch_id, batch_position,
-            completed_at)
-         VALUES ($1,'dashboard',$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                 CASE WHEN $11 THEN NOW() ELSE NULL END)
+            duration_seconds, thumbnail_url, batch_id, batch_position)
+         VALUES ($1,$2,'queued',$3,$4,$5,$6,$7,$8,$9,$10)
          RETURNING ${ROW_COLUMNS}`,
         [
           input.userId,
-          status,
+          input.source,
           JSON.stringify(cfg),
           v.video_id,
           v.title ?? null,
@@ -682,7 +702,6 @@ export async function enqueueBatch(
           v.thumbnail_url ?? null,
           batch.id,
           i,
-          status === 'completed',
         ],
       );
       requests.push(rows[0]);
@@ -690,28 +709,14 @@ export async function enqueueBatch(
     return { batch, requests };
   });
 
+  // Every row is `queued`, so every row gets a BullMQ job.
   for (const row of created.requests) {
-    if (row.status === 'queued') {
-      const jobId = await enqueueTranscriptJob(row.id);
-      await pool.query(
-        `UPDATE transcript_requests SET bullmq_job_id = $1 WHERE id = $2`,
-        [jobId, row.id],
-      );
-      row.bullmq_job_id = jobId;
-    } else {
-      await logApiRequest({
-        userId: input.userId,
-        endpoint: '/me/transcripts/bulk',
-        statusCode: 200,
-        videoId: row.video_id,
-        format: row.request.format,
-        language: row.request.language ?? null,
-        transcriptSource: null,
-        cacheHit: true,
-        creditsUsed: 0,
-        errorCode: null,
-      });
-    }
+    const jobId = await enqueueTranscriptJob(row.id);
+    await pool.query(
+      `UPDATE transcript_requests SET bullmq_job_id = $1 WHERE id = $2`,
+      [jobId, row.id],
+    );
+    row.bullmq_job_id = jobId;
   }
   return created;
 }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { apiKeyAuth } from '../middleware/apiKeyAuth';
 import { rateLimit } from '../middleware/rateLimit';
+import { validateUuidParam } from '../middleware/validateUuidParam';
 import { VALID_FORMATS, OutputFormat } from '../services/formatters';
 import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
@@ -65,6 +66,7 @@ transcriptRouter.get(
   '/transcript/:id',
   apiKeyAuth,
   rateLimit,
+  validateUuidParam('id'),
   async (req, res, next) => {
     try {
       const row = await svc.getUserRequest(req.params.id, req.user!.id);
@@ -146,6 +148,7 @@ transcriptRouter.post(
       });
       const result = await svc.enqueueBatch({
         userId: req.user!.id,
+        source: 'api',
         kind,
         sourceUrl,
         label,
@@ -172,6 +175,7 @@ transcriptRouter.get(
   '/transcripts/batches/:id',
   apiKeyAuth,
   rateLimit,
+  validateUuidParam('id'),
   async (req, res, next) => {
     try {
       const batch = await svc.getBatch(req.params.id, req.user!.id);
