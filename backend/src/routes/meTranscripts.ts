@@ -6,6 +6,7 @@ import { ValidationError, NotFoundError } from '../utils/errors';
 import * as svc from '../services/transcriptRequestService';
 import { expandBulkSource } from '../services/bulkExpansion';
 import { languageField, translateToField } from '../utils/languageFields';
+import { validateUuidParam } from '../middleware/validateUuidParam';
 
 /**
  * `/me/transcripts` — cookie-authed async transcript queue for the dashboard.
@@ -119,6 +120,7 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
     });
     const result = await svc.enqueueBatch({
       userId: req.user!.id,
+      source: 'dashboard',
       kind,
       sourceUrl,
       label,
@@ -136,7 +138,7 @@ meTranscriptsRouter.post('/bulk', async (req, res, next) => {
   }
 });
 
-meTranscriptsRouter.get('/batches/:id', async (req, res, next) => {
+meTranscriptsRouter.get('/batches/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const batch = await svc.getBatch(req.params.id, req.user!.id);
     if (!batch) {
@@ -152,7 +154,7 @@ meTranscriptsRouter.get('/batches/:id', async (req, res, next) => {
   }
 });
 
-meTranscriptsRouter.delete('/batches/:id', async (req, res, next) => {
+meTranscriptsRouter.delete('/batches/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const result = await svc.cancelBatch(req.params.id, req.user!.id);
     if (!result) {
@@ -169,7 +171,7 @@ meTranscriptsRouter.delete('/batches/:id', async (req, res, next) => {
   }
 });
 
-meTranscriptsRouter.get('/:id', async (req, res, next) => {
+meTranscriptsRouter.get('/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const row = await svc.getUserRequest(req.params.id, req.user!.id);
     if (!row) {
@@ -181,7 +183,7 @@ meTranscriptsRouter.get('/:id', async (req, res, next) => {
   }
 });
 
-meTranscriptsRouter.delete('/:id', async (req, res, next) => {
+meTranscriptsRouter.delete('/:id', validateUuidParam('id'), async (req, res, next) => {
   try {
     const row = await svc.cancelRequest(req.params.id, req.user!.id);
     if (!row) {

@@ -2,6 +2,7 @@ import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
+import { randomUUID } from 'crypto';
 import { config } from './config/env';
 import { logger } from './config/logger';
 import { healthRouter } from './routes/health';
@@ -68,6 +69,16 @@ export function createApp(): Application {
   app.use(
     pinoHttp({
       logger,
+      // Without genReqId, pino-http falls back to a per-process integer
+      // counter (1, 2, 3, …) that resets on every restart. That value is
+      // surfaced to callers as `request_id`, which the docs tell users to
+      // quote when reporting a failure — so it must be durably unique. Use a
+      // UUID, honoring an inbound `X-Request-Id` for trace propagation.
+      genReqId: (req) => {
+        const inbound = req.headers['x-request-id'];
+        if (typeof inbound === 'string' && inbound.trim()) return inbound.trim();
+        return randomUUID();
+      },
       autoLogging: { ignore: (req) => req.url === '/health' },
     }),
   );
