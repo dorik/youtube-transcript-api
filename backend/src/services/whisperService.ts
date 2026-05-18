@@ -113,7 +113,7 @@ export async function transcribeWithWhisper(
 
 		const openai = new OpenAI({apiKey: config.OPENAI_API_KEY});
 
-		logger.info({videoId, durationSeconds}, 'Whisper: calling OpenAI API');
+		logger.info({videoId, language, durationSeconds}, 'Whisper: calling OpenAI API');
 		const response = await openai.audio.transcriptions.create({
 			file: fs.createReadStream(audioPath),
 			model: 'whisper-1',
