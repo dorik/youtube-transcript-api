@@ -59,3 +59,7 @@ next-env.d.ts
 # Local task outputs / temp logs
 /tmp/
 *.cookies
+
+# YouTube auth cookies — contain a live login; NEVER commit
+*cookies*.txt
+youtube.com_cookies.txt
