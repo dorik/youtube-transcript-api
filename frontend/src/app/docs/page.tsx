@@ -271,7 +271,7 @@ function Section({
   return (
     <section id={id} className="py-8 border-t first:border-t-0">
       <h2 className="text-2xl font-bold tracking-tight mb-4">{title}</h2>
-      <div className="prose prose-sm max-w-none space-y-4 [&_code]:font-mono [&_code]:bg-muted [&_code]:px-1 [&_code]:rounded">
+      <div className="max-w-none space-y-4 [&_:not(pre)>code]:font-mono [&_:not(pre)>code]:bg-muted [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:rounded">
         {children}
       </div>
     </section>
