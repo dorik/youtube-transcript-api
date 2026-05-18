@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import axios from "axios";
 import { config } from "../config/env";
@@ -410,34 +412,74 @@ async function fetchAndParseJson3(
  * boot — using a function lets us defensively re-read on each call without
  * tying tests to module-import order.
  */
+/**
+ * Resolve a *writable* cookie file path for yt-dlp.
+ *
+ * yt-dlp rewrites its `--cookies` file on exit to persist rotated session
+ * cookies. Render mounts Secret Files read-only (`/etc/secrets/...`), so
+ * handing yt-dlp that path directly crashes it with
+ * `OSError: [Errno 30] Read-only file system` *after* an otherwise
+ * successful fetch. We sidestep that by copying the configured file once to
+ * a writable temp path and giving yt-dlp the copy — it is then free to
+ * rewrite it, and the rotated cookies survive for the process lifetime.
+ *
+ * Returns the writable path, or null when cookies are not configured, the
+ * source file is missing, or the copy failed.
+ */
+function resolveWritableCookiesPath(): string | null {
+  const source = config.YT_COOKIES_PATH;
+  if (!source || !existsSync(source)) {
+    return null;
+  }
+  const dest = join(tmpdir(), "yt-dlp-cookies.txt");
+  // Copy only on first use: a later call must not clobber the cookies
+  // yt-dlp rotated into `dest`.
+  if (existsSync(dest)) {
+    return dest;
+  }
+  try {
+    copyFileSync(source, dest);
+    return dest;
+  } catch (err) {
+    logger.warn(
+      { err, source },
+      "Failed to copy cookie file to a writable path; proceeding without cookies",
+    );
+    return null;
+  }
+}
+
 export function ytDlpNetworkArgs(): string[] {
   const args: string[] = [];
   if (config.PROXY_URL) {
     args.push("--proxy", config.PROXY_URL);
   }
-  if (config.YT_COOKIES_PATH) {
+
+  const cookiesPath = resolveWritableCookiesPath();
+  if (cookiesPath) {
     // The only knob YouTube currently respects for "Sign in to confirm
-    // you're not a bot" without an IP rotation. Path must point at a
-    // Netscape-format cookies file the process can read.
-    args.push("--cookies", config.YT_COOKIES_PATH);
+    // you're not a bot" without an IP rotation. Must be the writable copy —
+    // see resolveWritableCookiesPath.
+    args.push("--cookies", cookiesPath);
   }
 
   // Surface the anti-bot configuration on every yt-dlp call. A YT_COOKIES_PATH
   // that points at a missing or unreadable file is silently useless — yt-dlp
-  // just proceeds unauthenticated — so we check the file on disk, not only the
-  // env var, and warn loudly when it is set but absent.
-  const cookiesPath = config.YT_COOKIES_PATH;
-  const cookiesFileExists = cookiesPath ? existsSync(cookiesPath) : false;
+  // just proceeds unauthenticated — so we report whether a usable cookie file
+  // was actually resolved, and warn loudly when it was configured but is not.
+  const configured = Boolean(config.YT_COOKIES_PATH);
   const networkConfig = {
-    cookiesConfigured: Boolean(cookiesPath),
-    cookiesPath: cookiesPath ?? null,
-    cookiesFileExists,
-    cookiesFileBytes:
-      cookiesPath && cookiesFileExists ? statSync(cookiesPath).size : 0,
+    cookiesConfigured: configured,
+    cookiesSourcePath: config.YT_COOKIES_PATH ?? null,
+    cookiesActivePath: cookiesPath,
+    cookiesFileBytes: cookiesPath ? statSync(cookiesPath).size : 0,
     proxyConfigured: Boolean(config.PROXY_URL),
   };
-  if (cookiesPath && !cookiesFileExists) {
-    logger.warn(networkConfig, "yt-dlp: YT_COOKIES_PATH set but file not found");
+  if (configured && !cookiesPath) {
+    logger.warn(
+      networkConfig,
+      "yt-dlp: YT_COOKIES_PATH set but no usable cookie file",
+    );
   } else {
     logger.info(networkConfig, "yt-dlp network config");
   }
