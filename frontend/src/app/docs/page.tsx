@@ -61,12 +61,17 @@ print(result["result"]["transcript"])`,
 
 const RESPONSE_SAMPLE = `{
   "id": "a1b2c3d4-5e6f-7890-abcd-ef1234567890",
-  "status": "completed",
+  "user_id": "21bb5891-f61b-40c0-b81a-28f90dece908",
   "source": "api",
+  "status": "completed",
+  "request": { "url": "https://youtu.be/dQw4w9WgXcQ", "format": "json" },
   "video_id": "dQw4w9WgXcQ",
   "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
   "channel": "Rick Astley",
-  "credits_used": 1,
+  "duration_seconds": 212,
+  "thumbnail_url": "https://img.youtube.com/vi/dQw4w9WgXcQ/mqdefault.jpg",
+  "bullmq_job_id": "1843",
+  "attempts": 1,
   "result": {
     "video_id": "dQw4w9WgXcQ",
     "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -87,18 +92,24 @@ const RESPONSE_SAMPLE = `{
     "cached": false,
     "fetched_at": "2026-05-09T08:14:07.359Z"
   },
+  "credits_used": 1,
+  "error_code": null,
+  "error_message": null,
+  "batch_id": null,
+  "batch_position": null,
   "created_at": "2026-05-09T08:14:05.001Z",
+  "started_at": "2026-05-09T08:14:05.123Z",
   "completed_at": "2026-05-09T08:14:07.412Z"
 }`;
 
-const ERROR_CODES: Array<{ code: string; status: number; meaning: string }> = [
+const ERROR_CODES: Array<{ code: string; status: number | string; meaning: string }> = [
   { code: 'MISSING_API_KEY', status: 401, meaning: 'Authorization header is missing.' },
   { code: 'INVALID_API_KEY', status: 401, meaning: 'Bearer token is malformed, revoked, or unknown.' },
   { code: 'INVALID_AUTH_SCHEME', status: 401, meaning: 'Header is present but not the Bearer scheme.' },
   { code: 'VALIDATION_ERROR', status: 400, meaning: 'Request body or query parameters failed schema validation.' },
   { code: 'METHOD_NOT_ALLOWED', status: 405, meaning: 'The path exists but not for that HTTP method (see the Allow header).' },
   { code: 'INSUFFICIENT_CREDITS', status: 402, meaning: 'Account is out of credits for this billing cycle.' },
-  { code: 'NO_TRANSCRIPT', status: 404, meaning: 'Video has no captions and the Whisper fallback also produced nothing.' },
+  { code: 'NO_TRANSCRIPT', status: '—', meaning: 'Video has no captions and the Whisper fallback also produced nothing. Delivered as the error_code on a failed transcript request (HTTP 200), not as an HTTP error.' },
   { code: 'VIDEO_NOT_FOUND', status: 404, meaning: 'Video does not exist or is private/removed.' },
   { code: 'NOT_FOUND', status: 404, meaning: 'The transcript request or batch id does not exist (or is not yours).' },
   { code: 'ROUTE_NOT_FOUND', status: 404, meaning: 'The URL path does not match any API endpoint.' },
@@ -195,7 +206,8 @@ export default function DocsPage() {
             <code>GET /v1/search</code> accepts a <code>type</code> of{' '}
             <code>video</code> (the default), <code>channel</code>,{' '}
             <code>playlist</code>, or <code>all</code>. <code>limit</code>{' '}
-            defaults to 10 and is capped at 50 on every listing endpoint.
+            defaults to 10; values above 50 are rejected with a{' '}
+            <code>VALIDATION_ERROR</code> on every listing endpoint.
           </p>
         </Section>
 
@@ -250,6 +262,12 @@ export default function DocsPage() {
           </Card>
 
           <p className="text-sm">
+            A code with no HTTP status (<code>—</code>) is not an HTTP error: the
+            request returns <code>200</code>, then its <code>status</code> becomes{' '}
+            <code>failed</code> and <code>error_code</code> holds the code.
+          </p>
+
+          <p className="text-sm">
             All errors share the envelope{' '}
             <code>{'{'} error, code, message, request_id, ...details {'}'}</code>.
             Quote the <code>request_id</code> when reporting a failure so it can
@@ -257,13 +275,6 @@ export default function DocsPage() {
           </p>
         </Section>
 
-        <Section id="ratelimit" title="Rate limits">
-          <p>
-            Every API key gets <strong>100 requests per minute</strong> by default. The current
-            window is exposed via <code>X-RateLimit-*</code> headers. Hitting the limit returns
-            HTTP 429 with a <code>retry_after</code> field on the body.
-          </p>
-        </Section>
       </main>
       <SiteFooter />
     </>
